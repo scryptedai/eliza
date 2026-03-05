@@ -67,7 +67,8 @@
                   "guides/background-tasks",
                   "guides/test-a-project",
                   "guides/create-a-plugin",
-                  "guides/publish-a-plugin"
+                  "guides/publish-a-plugin",
+                  "guides/scryptedai-integration"
                 ]
               },
               {

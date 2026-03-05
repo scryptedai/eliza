@@ -1,0 +1,275 @@
+---
+title: "ScryptedAI Integration"
+description: "Multimodal generation (images, videos, text) via api.scrypted.ai with webhook + polling job lifecycle"
+---
+
+The `@elizaos/plugin-scryptedai` plugin wires your agent into the ScryptedAI multimodal generation API. It provides a typed client for every generation endpoint, an idempotent job lifecycle manager, and a secure webhook route — with polling as an automatic fallback when webhooks aren't configured.
+
+## Quick Start
+
+### 1. Install and register
+
+```typescript
+import { scryptedaiPlugin } from "@elizaos/plugin-scryptedai";
+
+export const character = {
+  name: "MyAgent",
+  plugins: [scryptedaiPlugin],
+  // ...
+};
+```
+
+### 2. Set environment variables
+
+```bash .env
+# Required — service will fail to start without this
+SCRYPTEDAI_BEARER_TOKEN=scrypted_your_token_here_xxxxxxxxxxxx
+
+# Required for webhook delivery (skip for polling-only)
+SCRYPTEDAI_WEBHOOK_SECRET=your_shared_secret
+
+# API base URL (default shown; leave unset to use default)
+SCRYPTEDAI_BASE_URL=https://api.scrypted.ai
+```
+
+<Tip>
+**No token yet?** The client supports permissionless bootstrap — construct it tokenless and call `createAccount()` to obtain one:
+
+```typescript
+import { ScryptedClient } from "@elizaos/plugin-scryptedai";
+
+const client = new ScryptedClient(); // defaults to https://api.scrypted.ai
+const account = await client.createAccount(); // POST /accounts — no auth needed
+// account.bearer_token is now auto-adopted by the client. Save it to .env.
+```
+
+The ElizaOS **service** still requires `SCRYPTEDAI_BEARER_TOKEN` at start — use this one-time bootstrap to mint the token, then configure the env var.
+</Tip>
+
+<Warning>
+The bearer token must start with `scrypted_` and be at least 20 characters. The client validates format at construction and throws `ScryptedAuthenticationError` on mismatch — no requests are sent with malformed tokens.
+</Warning>
+
+### 3. Invoke a generation
+
+```typescript
+import type { ScryptedAIService } from "@elizaos/plugin-scryptedai";
+
+// In an action handler, evaluator, or anywhere with runtime access:
+const svc = runtime.getService<ScryptedAIService>("scryptedai");
+
+const { jobId } = await svc.startImageGeneration(
+  "invokeNanoBananaGeneration",
+  { prompt: "a red fox wearing a spacesuit, studio lighting" },
+);
+
+// React to completion (webhook OR polling — same listener path)
+svc.onTerminal((result) => {
+  if (result.jobId === jobId) {
+    if (result.status === "completed") {
+      runtime.logger.info("Image ready: " + result.imageUrl);
+    } else {
+      runtime.logger.warn("Generation failed: " + result.error);
+    }
+  }
+});
+```
+
+That's it. The plugin handles job tracking, polling backoff, transient-error retries, and webhook deduplication for you.
+
+---
+
+## Architecture
+
+```
+invoke → job_id → [webhook arrives] ┐
+                                    ├→ processTerminal() → listeners fire
+                  [polling resolves]┘       (idempotent on jobId+status)
+```
+
+**Single terminal processor.** Both the webhook route and the polling loop funnel into `ScryptedAIService.processTerminal()`. It checks the `(jobId, status)` pair against a processed-set before mutating state — so duplicate webhook deliveries, out-of-order deliveries, and webhook/polling races are all safe. First terminal writer wins.
+
+---
+
+## Webhook Setup
+
+Webhooks are the low-latency completion path. The plugin registers `POST /scryptedai/webhook` as a public route.
+
+### Raw body middleware
+
+<Warning>
+**HMAC-SHA256 signature verification requires the exact raw bytes ScryptedAI signed.** If your server's global JSON body parser runs first, the route cannot verify the signature and will return `400 raw_body_required`.
+</Warning>
+
+Register `express.raw()` **before** your global JSON parser for this path only:
+
+```typescript
+// In your server setup — BEFORE app.use(express.json())
+app.use("/scryptedai/webhook", express.raw({ type: "application/json" }));
+app.use(express.json());
+```
+
+The route handler checks `Buffer.isBuffer(req.body) || typeof req.body === "string"` and fails closed otherwise.
+
+### Signature verification
+
+Signatures are HMAC-SHA256 over the raw body, hex-encoded, delivered in the `X-Webhook-Signature` header. Verification uses `crypto.timingSafeEqual` for constant-time comparison.
+
+The secret is read from `SCRYPTEDAI_WEBHOOK_SECRET`. If unset, the route returns `500 webhook_secret_not_configured` and logs an error.
+
+### Local development
+
+Use a tunnel to expose your local webhook:
+
+```bash
+ngrok http 3000
+# → Forwarding  https://abc123.ngrok-free.app → http://localhost:3000
+```
+
+Then pass the public URL when invoking:
+
+```typescript
+await svc.startImageGeneration("invokeNanoBananaGeneration", { prompt }, {
+  webhookUrl: "https://abc123.ngrok-free.app/scryptedai/webhook",
+});
+```
+
+---
+
+## Polling Fallback
+
+If you don't pass a `webhookUrl`, the service automatically starts a background poll for the job. You can also disable it:
+
+```typescript
+await svc.startVideoGeneration("invokeSora2Generation", inputData, {
+  pollFallback: false, // caller will handle completion manually
+});
+```
+
+**Polling windows** (configurable via `POLLING_WINDOWS` constant):
+
+| Job type | Min age before first poll | Max wait | Backoff intervals |
+|---|---|---|---|
+| `text` | 2s | 60s | 2, 4, 8, 15s |
+| `image` | 5s | 5 min | 5, 10, 20, 30s |
+| `video` | 15s | 30 min | 15, 30, 60, 60s |
+
+**Transient error handling:** 502/503/504 status codes and network/timeout errors during polling are absorbed — the poll continues. Only non-transient errors (4xx other than 429) cause the poll to reject.
+
+---
+
+## Response Normalization
+
+The ScryptedAI API returns results under several key variants depending on endpoint and provider. The plugin normalizes all of them into a single `NormalizedJobResult`:
+
+```typescript
+interface NormalizedJobResult {
+  jobId: string;
+  status: "pending" | "processing" | "completed" | "failed" | "cancelled";
+  result?: Record<string, unknown>; // merged from result_data > result > output
+  error?: string;                   // extracted from error_message, error.message, or error
+  imageUrl?: string;                // first image URL, probed from all variant shapes
+  videoUrl?: string;                // first video URL, probed from all variant shapes
+  text?: string;                    // text content, probed from all variant shapes
+}
+```
+
+**Status is always lowercased.** The API may return `COMPLETED`, `Failed`, `success`, `running`, etc. — all are mapped to the canonical five. Never branch on raw status.
+
+**Image URL probe order:** `result_data.images[0].{asset_url|cdn_url|cloudfront_url|url}` → `result.images[0].*` → legacy `result.image.url` / `result.image_url` / `result.imageUrl` → top-level `images[0]`.
+
+---
+
+## Direct Client Usage
+
+The `ScryptedClient` class is exported standalone if you want to bypass the service lifecycle:
+
+```typescript
+import { ScryptedClient, pollJobToCompletion } from "@elizaos/plugin-scryptedai";
+
+const client = new ScryptedClient({
+  bearerToken: process.env.SCRYPTEDAI_BEARER_TOKEN!,
+});
+
+// All 18+ generation endpoints are first-class methods:
+const response = await client.invokeSora2Generation({
+  prompt: "camera pans across a foggy forest",
+  image_url: "https://cdn.example.com/seed.jpg",
+});
+
+// Block until terminal (useful for scripts/tests)
+const { result, timedOut } = await pollJobToCompletion(client, response.job_id, {
+  jobType: "video",
+});
+```
+
+### Available invoke methods
+
+**Images:** `invokeImageGeneration`, `invokeNanoBananaGeneration`, `invokeNanoBananaProGeneration`, `invokeNanoBananaEditGeneration`, `invokeNanoBananaProEditGeneration`, `invokeSeedream4Generation`, `invokeFlux2ProGeneration`, `invokeGrokImagineImageGeneration`
+
+**Videos:** `invokeVideoGeneration`, `invokeNovaReelGeneration`, `invokeHailuo23Generation`, `invokeVeo3Generation`, `invokeVeo31Generation`, `invokeSora2Generation`, `invokeSora2I2VGeneration`, `invokeGrokImagineI2VGeneration`, `invokeTopazVideoUpscale`
+
+**Text:** `invokeTextGeneration`
+
+**Recipes/Jobs:** `invokeRecipe`, `getRecipeInterface`, `getJobStatus`, `cancelJob`
+
+**Account:** `createAccount` (permissionless — obtains + auto-adopts token), `getAccountInfo`, `getBearerToken`
+
+---
+
+## Standalone Utilities
+
+The plugin exports its internals for direct reuse:
+
+```typescript
+import {
+  // Webhook — use in your own routes
+  verifyWebhookSignature,     // (rawBody, sig, secret) => boolean
+  parseWebhookPayload,        // (rawBody) => { normalized, payload }
+
+  // Polling — use in scripts/CLIs
+  pollJobToCompletion,        // (client, jobId, opts) => PollResult
+
+  // Normalization — use on any raw payload
+  normalizeJobPayload,        // (raw) => NormalizedJobResult
+  normalizeStatus,            // (raw) => NormalizedStatus
+  isTerminalStatus,           // (status) => boolean
+  extractImageUrl,            // (payload) => string | undefined
+  extractVideoUrl,            // (payload) => string | undefined
+  extractText,                // (payload) => string | undefined
+
+  // Retry helper
+  retryWithBackoff,           // excludes auth/validation/payment errors
+  generateIdempotencyKey,     // 256-bit hex
+  validateBearerToken,        // format check
+} from "@elizaos/plugin-scryptedai";
+```
+
+---
+
+## Error Handling
+
+All errors subclass `ScryptedError`. The retry logic (`retryWithBackoff`) automatically excludes non-retriable types:
+
+| Error class | Retried? | Trigger |
+|---|---|---|
+| `ScryptedAuthenticationError` | **No** | Invalid/missing token |
+| `ScryptedValidationError` | **No** | Bad input (missing prompt, etc.) |
+| `ScryptedPaymentError` | **No** | 402 — insufficient balance |
+| `ScryptedRateLimitError` | Yes | 429 — includes `retryAfter` |
+| `ScryptedAPIError` | Yes | Other 4xx/5xx |
+| `ScryptedNetworkError` | Yes | Fetch failures |
+| `ScryptedTimeoutError` | Yes | Request timeout |
+
+---
+
+## Operational Notes
+
+<Info>
+**Job store is in-memory.** Job records and the processed-tuple set live in `Map`/`Set` on the service instance and are lost on restart. If you need post-restart recovery, persist `jobId` in your own storage and call `client.getJobStatus(jobId)` after restart.
+</Info>
+
+- Status normalization is applied at every boundary — internal code never branches on raw status strings.
+- The webhook route accepts payloads in both top-level and `{ payload: { ... } }` wrapped shapes.
+- Listener exceptions are caught and logged; one throwing listener won't halt others or break terminal processing.
+- Active polls are aborted on `service.stop()`.
