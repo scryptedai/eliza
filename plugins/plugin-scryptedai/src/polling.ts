@@ -18,7 +18,11 @@ import {
   POLLING_WINDOWS,
   TRANSIENT_GATEWAY_STATUS,
 } from "./constants.ts";
-import { ScryptedAPIError } from "./exceptions.ts";
+import {
+  ScryptedAPIError,
+  ScryptedNetworkError,
+  ScryptedTimeoutError,
+} from "./exceptions.ts";
 import type { NormalizedJobResult } from "./types.ts";
 
 function sleep(ms: number): Promise<void> {
@@ -123,9 +127,8 @@ export async function pollJobToCompletion(
 
       // Also treat network/timeout errors as transient (guide §6.1)
       const isNetworkLike =
-        error instanceof Error &&
-        (error.name === "ScryptedNetworkError" ||
-          error.name === "ScryptedTimeoutError");
+        error instanceof ScryptedNetworkError ||
+        error instanceof ScryptedTimeoutError;
 
       if (!isTransient && !isNetworkLike) {
         // Non-transient error (auth, validation, 4xx other than 429) → rethrow

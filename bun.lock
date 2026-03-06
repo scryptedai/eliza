@@ -260,6 +260,19 @@
         "vitest": "^4.0.0",
       },
     },
+    "plugins/plugin-avb": {
+      "name": "@elizaos/plugin-avb",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elizaos/core": "workspace:*",
+        "@elizaos/plugin-scryptedai": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^25.0.3",
+        "typescript": "^5.9.3",
+        "vitest": "^4.0.0",
+      },
+    },
     "plugins/plugin-scryptedai": {
       "name": "@elizaos/plugin-scryptedai",
       "version": "0.1.0",
@@ -520,6 +533,8 @@
     "@elizaos/docs": ["@elizaos/docs@workspace:packages/docs"],
 
     "@elizaos/interop": ["@elizaos/interop@workspace:packages/interop"],
+
+    "@elizaos/plugin-avb": ["@elizaos/plugin-avb@workspace:plugins/plugin-avb"],
 
     "@elizaos/plugin-scryptedai": ["@elizaos/plugin-scryptedai@workspace:plugins/plugin-scryptedai"],
 

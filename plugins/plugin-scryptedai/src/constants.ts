@@ -134,3 +134,25 @@ export const WEBHOOK_ROUTE_PATH = "/webhook"; // mounts at /scryptedai/webhook (
 export const ENV_BEARER_TOKEN = "SCRYPTEDAI_BEARER_TOKEN";
 export const ENV_WEBHOOK_SECRET = "SCRYPTEDAI_WEBHOOK_SECRET";
 export const ENV_BASE_URL = "SCRYPTEDAI_BASE_URL";
+/** Select which image endpoint `runtime.useModel(IMAGE, ...)` uses. Default: nano-banana. */
+export const ENV_IMAGE_MODEL = "SCRYPTEDAI_IMAGE_MODEL";
+
+// ----------------------------------------------------------------------------
+// Model handler configuration
+// ----------------------------------------------------------------------------
+
+/** Image endpoint names selectable via SCRYPTEDAI_IMAGE_MODEL. */
+export type ImageModelName =
+  | "nano-banana"
+  | "nano-banana-pro"
+  | "seedream-4"
+  | "flux-2-pro"
+  | "aws-canvas"
+  | "grok-imagine";
+
+export const DEFAULT_IMAGE_MODEL: ImageModelName = "nano-banana";
+
+/** Max time the IMAGE model handler will block awaiting a terminal result (ms). */
+export const MODEL_IMAGE_TIMEOUT_MS = 300_000;
+/** Max time the TEXT_LARGE model handler will block awaiting a terminal result (ms). */
+export const MODEL_TEXT_TIMEOUT_MS = 60_000;

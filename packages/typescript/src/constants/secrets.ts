@@ -129,6 +129,9 @@ export const CANONICAL_SECRET_KEYS = [
 
   // Ollama (local inference)
   "OLLAMA_BASE_URL",
+
+  // ScryptedAI multimodal generation
+  "SCRYPTEDAI_BEARER_TOKEN",
 ] as const;
 
 /**
@@ -163,6 +166,9 @@ export const MODEL_PROVIDER_SECRETS: Record<string, string> = {
 
   // Local inference (checks for URL instead of API key)
   ollama: "OLLAMA_BASE_URL",
+
+  // Multimodal generation (images/video/text)
+  scryptedai: "SCRYPTEDAI_BEARER_TOKEN",
 };
 
 /**

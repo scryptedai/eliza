@@ -134,6 +134,43 @@ export class ScryptedAIService extends Service {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * Await a specific job's terminal result. Resolves immediately if the job
+   * is already terminal; otherwise blocks until a terminal event fires
+   * (via webhook OR polling) or the timeout elapses.
+   */
+  async awaitJob(
+    jobId: string,
+    timeoutMs?: number,
+  ): Promise<NormalizedJobResult> {
+    const existing = this.jobs.get(jobId);
+    if (existing?.result && isTerminalStatus(existing.status)) {
+      return existing.result;
+    }
+
+    return new Promise<NormalizedJobResult>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+
+      const unsubscribe = this.onTerminal((result) => {
+        if (result.jobId !== jobId) return;
+        unsubscribe();
+        if (timer) clearTimeout(timer);
+        resolve(result);
+      });
+
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          unsubscribe();
+          reject(
+            new Error(
+              `awaitJob timed out after ${timeoutMs}ms (jobId=${jobId})`,
+            ),
+          );
+        }, timeoutMs);
+      }
+    });
+  }
+
   // --------------------------------------------------------------------------
   // Public: job store queries
   // --------------------------------------------------------------------------

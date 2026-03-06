@@ -128,7 +128,9 @@ async function handleResponse<T>(response: Response): Promise<T> {
 
     switch (response.status) {
       case 401:
-        throw new ScryptedAPIError("Authentication failed", 401, responseData);
+        throw new ScryptedAuthenticationError(
+          "Authentication failed (HTTP 401)",
+        );
       case 402:
         throw new ScryptedPaymentError(
           "Payment required",

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   generateIdempotencyKey,
   retryWithBackoff,
@@ -238,5 +238,49 @@ describe("client: input validation on invoke methods", () => {
     await expect(client.invokeTopazVideoUpscale({})).rejects.toThrow(
       ScryptedValidationError,
     );
+  });
+});
+
+describe("client: HTTP 401 → ScryptedAuthenticationError (no retry)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("maps HTTP 401 to ScryptedAuthenticationError and does NOT retry", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", mockFetch);
+
+    const client = new ScryptedClient({
+      bearerToken: "scrypted_test_token_1234567890abcdef",
+      maxRetries: 3,
+    });
+
+    await expect(client.getJobStatus("some-job")).rejects.toThrow(
+      ScryptedAuthenticationError,
+    );
+    // Regression: before the fix, 401 threw ScryptedAPIError → retried 4 times.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps HTTP 401 on POST (invoke) to ScryptedAuthenticationError without retry", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response("", { status: 401 }));
+    vi.stubGlobal("fetch", mockFetch);
+
+    const client = new ScryptedClient({
+      bearerToken: "scrypted_test_token_1234567890abcdef",
+      maxRetries: 3,
+    });
+
+    await expect(
+      client.invokeTextGeneration({ user_prompt: "hi" }),
+    ).rejects.toThrow(ScryptedAuthenticationError);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -16,6 +16,7 @@
  */
 
 import type { Plugin } from "@elizaos/core";
+import { scryptedaiModelHandlers } from "./models.ts";
 import { ScryptedAIService } from "./service.ts";
 import { scryptedaiWebhookRoute } from "./webhook.ts";
 
@@ -30,6 +31,10 @@ export const scryptedaiPlugin: Plugin = {
     "Handles async job lifecycle with webhook callbacks and polling fallback.",
   services: [ScryptedAIService],
   routes: [scryptedaiWebhookRoute],
+  // Model handlers: invoked via runtime.useModel(ModelType.TEXT_LARGE|IMAGE, ...)
+  // Cast: core's Plugin.models type depends on generated proto types; handlers
+  // are structurally compatible (see models.ts).
+  models: scryptedaiModelHandlers as unknown as Plugin["models"],
 };
 
 export default scryptedaiPlugin;
@@ -62,10 +67,13 @@ export {
 // Constants
 export {
   API_BASE_URL,
+  DEFAULT_IMAGE_MODEL,
   ENDPOINTS,
   ENV_BASE_URL,
   ENV_BEARER_TOKEN,
+  ENV_IMAGE_MODEL,
   ENV_WEBHOOK_SECRET,
+  type ImageModelName,
   type JobType,
   POLLING_WINDOWS,
   type PollingWindow,
@@ -82,6 +90,12 @@ export {
   ScryptedTimeoutError,
   ScryptedValidationError,
 } from "./exceptions.ts";
+// Model handlers (invoked via runtime.useModel)
+export {
+  handleImage,
+  handleTextLarge,
+  scryptedaiModelHandlers,
+} from "./models.ts";
 // Standalone polling utility (reusable independently)
 export {
   type PollOptions,
