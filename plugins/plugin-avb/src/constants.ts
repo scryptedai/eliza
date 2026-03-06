@@ -79,5 +79,12 @@ export const PHASE_TICK_INTERVAL_MS = 5_000;
 /** Optional override for the scryptedai image method used in IMAGE_PHASE. */
 export const ENV_AVB_IMAGE_METHOD = "AVB_IMAGE_METHOD";
 
+/**
+ * Autonomous avatar generation on boot. Defaults to enabled: if no avatar
+ * exists and no run is in flight, AvbService.start() will self-trigger
+ * createRun() targeting the agent's own room. Set to "false" to opt out.
+ */
+export const ENV_AVB_AUTOGEN_ON_BOOT = "AVB_AUTOGEN_ON_BOOT";
+
 /** Default scryptedai client method for image generation (Seedream 4). */
 export const DEFAULT_IMAGE_METHOD = "invokeSeedream4Generation";

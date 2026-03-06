@@ -148,6 +148,11 @@ export interface AvbRuntimeSurface {
     },
     tableName: string,
   ): Promise<UUID>;
+  getMemories(params: {
+    roomId: UUID;
+    tableName: string;
+    count?: number;
+  }): Promise<Array<{ content?: Record<string, unknown> }>>;
   emitEvent(name: string, payload: unknown): Promise<void>;
   // Task worker registration
   registerTaskWorker(worker: {

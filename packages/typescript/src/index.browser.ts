@@ -17,6 +17,7 @@ export * from "./database/inMemoryAdapter";
 export * from "./entities";
 export * from "./logger";
 export * from "./memory";
+export * from "./prompt-set";
 export * from "./prompts";
 // Providers
 export * from "./providers/sessionKeys";

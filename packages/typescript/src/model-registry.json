@@ -1,0 +1,22 @@
+{
+  "$schema": "./model-registry.schema.json",
+  "default": "amazon.nova-pro-v1:0",
+  "models": {
+    "amazon.nova-pro-v1:0": {
+      "maxInputTokens": 300000,
+      "maxOutputTokens": 10000,
+      "provider": "aws-bedrock",
+      "notes": "docs.aws.amazon.com/nova/latest/userguide/what-is-nova.html"
+    },
+    "amazon.nova-lite-v1:0": {
+      "maxInputTokens": 300000,
+      "maxOutputTokens": 10000,
+      "provider": "aws-bedrock"
+    },
+    "amazon.nova-micro-v1:0": {
+      "maxInputTokens": 128000,
+      "maxOutputTokens": 10000,
+      "provider": "aws-bedrock"
+    }
+  }
+}

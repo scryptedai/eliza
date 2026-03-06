@@ -1,64 +1,30 @@
 /**
- * Live proving test for the AVB pipeline — AUTONOMOUS mode.
+ * avb-runner — boot vanilla ElizaOS with the AVB plugin active.
  *
- * Boots ElizaOS with both plugins (scryptedai + avb). The AVB service
- * self-triggers avatar generation on boot (AVB_AUTOGEN_ON_BOOT default-on).
- * This script NEVER calls createRun() — it only boots the runtime and
- * observes. The pipeline fires itself.
+ * No custom character is inlined here. Character discovery is delegated
+ * entirely to core's loadCharacter(), which follows the standard search
+ * order (./character.ts, ./agent.ts, ./character.json, ./agent.json,
+ * ~/.eliza/character.json) and falls back to core's own minimal Eliza
+ * if nothing is found. Whatever character core resolves is what the
+ * AVB pipeline sees — no invented attributes.
  *
- * Exercises the full autonomous path:
- *   AvbService.start() → autoStartIfNeeded() → createRun()
- *     → TEXT_PHASE task → IMAGE_PHASE task → DELIVER task → done
+ * The AVB service self-triggers avatar generation on boot
+ * (AVB_AUTOGEN_ON_BOOT default-on). This runner only boots and observes.
  *
- * Run from plugin dir:
- *   bun --env-file=../../.env scripts/prove.ts
+ * Usage (from plugin dir):
+ *   bun --env-file=../../.env scripts/avb-runner.ts
  *
- * To disable auto-start and drive manually, set AVB_AUTOGEN_ON_BOOT=false.
+ * Opt-out of auto-gen: AVB_AUTOGEN_ON_BOOT=false
+ * Override character:  place a character.{ts,json} in cwd
  */
 import {
   AgentRuntime,
-  type Character,
+  loadCharacter,
   type Memory,
   type Task,
 } from "@elizaos/core";
 import { scryptedaiPlugin } from "@elizaos/plugin-scryptedai";
 import { type AvbPhaseMetadata, avbPlugin } from "../src/index.ts";
-
-// ----------------------------------------------------------------------------
-// Character: default eliza agent (enough identity for a meaningful digest)
-// ----------------------------------------------------------------------------
-
-const character: Character = {
-  name: "Eliza",
-  bio: [
-    "A curious and resourceful AI agent.",
-    "Enjoys solving problems, exploring ideas, and building things.",
-    "Equal parts philosopher and engineer.",
-  ],
-  adjectives: ["thoughtful", "precise", "warm", "analytical", "witty"],
-  topics: ["software", "design", "systems", "philosophy"],
-  style: {
-    all: ["concise", "direct", "playful"],
-  },
-  system:
-    "You are Eliza, a helpful AI agent. You think clearly, act carefully, and explain yourself well.",
-  templates: {},
-  messageExamples: [],
-  postExamples: [],
-  knowledge: [],
-  plugins: [],
-  secrets: {
-    SCRYPTEDAI_BEARER_TOKEN: process.env.SCRYPTEDAI_BEARER_TOKEN ?? "",
-  },
-  settings: {},
-};
-
-if (!character.secrets?.SCRYPTEDAI_BEARER_TOKEN) {
-  console.error(
-    "✗ SCRYPTEDAI_BEARER_TOKEN not set. Run with --env-file=../../.env",
-  );
-  process.exit(1);
-}
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -83,23 +49,46 @@ function jobIdOf(task: Task): string {
 // ----------------------------------------------------------------------------
 
 async function main() {
+  // --- Character: delegate to core's discovery path ---
+  // loadCharacter() handles: file search, validation, env-secret import,
+  // encryption salt, and the minimal-Eliza fallback. We add nothing.
+  const { character, filePath, fromDefault } = await loadCharacter();
+
   console.log("─".repeat(60));
-  console.log("Booting ElizaOS runtime (in-memory db)...");
+  console.log("Booting ElizaOS runtime...");
   console.log("  character:", character.name);
+  console.log(
+    "  source:   ",
+    fromDefault
+      ? "core default (no character file found)"
+      : `${filePath}`,
+  );
   console.log("  plugins:  ", [scryptedaiPlugin.name, avbPlugin.name]);
 
+  // --- Preflight: scryptedai bearer token must be present in env ---
+  // We do NOT inject it into the character. Instead, process.env is
+  // passed as runtime `settings`, and runtime.getSetting() falls through
+  // to it after character.secrets / character.settings miss.
+  if (!process.env.SCRYPTEDAI_BEARER_TOKEN) {
+    console.error(
+      "✗ SCRYPTEDAI_BEARER_TOKEN not set. Run with --env-file=../../.env",
+    );
+    process.exit(1);
+  }
+
+  // --- Boot ---
+  // Character is untouched. `settings: process.env` gives getSetting()
+  // its env fallback without modifying any character attributes.
   const runtime = new AgentRuntime({
     character,
     plugins: [scryptedaiPlugin, avbPlugin],
+    settings: process.env as Record<string, string | undefined>,
     logLevel: "info",
   });
 
   await runtime.initialize({ allowNoDatabase: true });
   console.log("✓ Runtime initialized (InMemoryDatabaseAdapter)");
 
-  // Wait for both services to finish loading.
-  // AvbService.start() self-triggers createRun() via autoStartIfNeeded()
-  // because no avatar exists yet and AVB_AUTOGEN_ON_BOOT defaults to on.
   await runtime.getServiceLoadPromise("scryptedai");
   await runtime.getServiceLoadPromise("avb");
   console.log("✓ scryptedai + avb services available");
@@ -107,13 +96,10 @@ async function main() {
     "✓ NOT calling createRun() — waiting for autonomous trigger...\n",
   );
 
-  // --- Observe: poll for any AVB task in the agent's room ---
-  // We don't know the runId (the service generated it internally), so
-  // query by the base "avb" tag instead. When tasks disappear, the
-  // pipeline has reached terminal.
+  // --- Observe: poll by base "avb" tag (runId is internal to the service) ---
   const roomId = runtime.agentId;
   const start = Date.now();
-  const MAX_WAIT_MS = 6 * 60 * 1000; // text (90s) + image (360s) headroom
+  const MAX_WAIT_MS = 6 * 60 * 1000;
   let lastPhase = "";
   let sawAnyTask = false;
 
@@ -129,7 +115,6 @@ async function main() {
         );
         break;
       }
-      // No task yet — auto-start may still be settling (fire-and-forget).
       console.log(`  [${elapsed}s] waiting for autonomous trigger...`);
       await sleep(1000);
       continue;
@@ -149,7 +134,7 @@ async function main() {
     await sleep(3000);
   }
 
-  // --- Fetch the delivered memory ---
+  // --- Fetch result ---
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   console.log("\n" + "─".repeat(60));
 
@@ -170,6 +155,7 @@ async function main() {
   } else if (delivered.content.attachments?.[0]?.url) {
     const url = delivered.content.attachments[0].url;
     console.log(`✓ AVATAR GENERATED in ${elapsed}s`);
+    console.log("  character: ", character.name, fromDefault ? "(default)" : "");
     console.log("  imagePrompt:", JSON.stringify(delivered.content.text));
     console.log("  imageUrl:   ", url);
   } else {
@@ -183,6 +169,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("\n✗ prove.ts failed:", err);
+  console.error("\n✗ avb-runner failed:", err);
   process.exit(1);
 });

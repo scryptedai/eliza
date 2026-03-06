@@ -9,7 +9,12 @@
  * style.all[], system.
  * Fields excluded: id, templates, plugins, settings, secrets, knowledge,
  * messageExamples (too verbose/PII-adjacent).
+ *
+ * Prompt composition is handled by core's PromptSet — this module only
+ * defines the templates and the character-digest builder.
  */
+
+import { PromptSet, toScryptedPayload } from "@elizaos/core";
 
 export interface DigestableCharacter {
   name?: string;
@@ -88,35 +93,51 @@ export function digestCharacter(c: DigestableCharacter): string {
 }
 
 /**
- * System prompt for TEXT_PHASE — defines the model's role and output
- * contract. Stable across runs; does not embed character data.
+ * Model ID for TEXT_PHASE. ScryptedAI's text endpoint is currently Nova Pro
+ * only (see plugin-scryptedai/src/constants.ts ENDPOINTS.generations_text_nova_pro).
+ * When scryptedai adds more text backends, swap this string (or make it a
+ * setting) — limits are resolved from core's model-registry.json automatically.
  */
-export const IMAGE_PROMPT_SYSTEM =
-  "You are an expert visual prompt engineer. Your job: read an AI agent's " +
-  "character profile and design ONE vivid, concrete image-generation prompt " +
-  "that personifies the agent as a visual avatar (portrait or symbolic figure). " +
-  "Output ONLY the image prompt — no preamble, no explanation, no quotes, no " +
-  "markdown. Be specific about visual style, mood, lighting, composition, and " +
-  "medium. Keep it under 100 words. Do not include the agent's literal name.";
+export const IMAGE_PROMPT_MODEL = "amazon.nova-pro-v1:0";
 
 /**
- * User prompt for TEXT_PHASE — the per-run character data.
- * Pairs with IMAGE_PROMPT_SYSTEM.
+ * PromptSet for TEXT_PHASE — system envelope + user template.
+ * System is stable across runs; user embeds the per-run character digest.
+ * Limits are resolved from the model registry via IMAGE_PROMPT_MODEL.
  */
+export const imagePromptSet = new PromptSet({
+  system:
+    "You are an expert visual prompt engineer. Your job: read an AI agent's " +
+    "character profile and design ONE vivid, concrete image-generation prompt " +
+    "that personifies the agent as a visual avatar (portrait or symbolic figure). " +
+    "Output ONLY the image prompt — no preamble, no explanation, no quotes, no " +
+    "markdown. Be specific about visual style, mood, lighting, composition, and " +
+    "medium. Keep it under 100 words. Do not include the agent's literal name.",
+  user:
+    "Agent profile:\n{{CHARACTER_DIGEST}}\n\n" +
+    "Now write the image-generation prompt for this agent's avatar.",
+  model: IMAGE_PROMPT_MODEL,
+});
+
+/** @deprecated Read `imagePromptSet.systemTemplate` instead. */
+export const IMAGE_PROMPT_SYSTEM = imagePromptSet.systemTemplate;
+
+/** @deprecated Use `imagePromptSet.render({ CHARACTER_DIGEST })` instead. */
 export function buildImagePromptUser(characterDigest: string): string {
-  return `Agent profile:\n${characterDigest}\n\nNow write the image-generation prompt for this agent's avatar.`;
+  return imagePromptSet.render({ CHARACTER_DIGEST: characterDigest }).user;
 }
 
 /**
- * Convenience: produce the full { system_prompt, user_prompt } payload
- * for scryptedai's nova-pro text endpoint.
+ * Render the full scryptedai payload for TEXT_PHASE.
+ *
+ * @deprecated Prefer `toScryptedPayload(imagePromptSet.render({ CHARACTER_DIGEST }))`
+ * directly; kept for existing callers and tests.
  */
 export function buildImagePromptRequest(characterDigest: string): {
   system_prompt: string;
   user_prompt: string;
 } {
-  return {
-    system_prompt: IMAGE_PROMPT_SYSTEM,
-    user_prompt: buildImagePromptUser(characterDigest),
-  };
+  const rendered = imagePromptSet.render({ CHARACTER_DIGEST: characterDigest });
+  const { system_prompt, user_prompt } = toScryptedPayload(rendered);
+  return { system_prompt, user_prompt };
 }

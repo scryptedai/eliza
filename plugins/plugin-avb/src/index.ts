@@ -55,6 +55,7 @@ export {
   AVB_SERVICE_TYPE,
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
+  ENV_AVB_AUTOGEN_ON_BOOT,
   ENV_AVB_IMAGE_METHOD,
   PHASE_TICK_INTERVAL_MS,
   PIPELINE,
@@ -69,7 +70,9 @@ export {
   buildImagePromptUser,
   type DigestableCharacter,
   digestCharacter,
+  IMAGE_PROMPT_MODEL,
   IMAGE_PROMPT_SYSTEM,
+  imagePromptSet,
 } from "./introspect.ts";
 // Service
 export { AvbService } from "./service.ts";

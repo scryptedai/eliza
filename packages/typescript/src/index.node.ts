@@ -46,6 +46,7 @@ export * from "./network";
 export * from "./plugin";
 // Export plugin discovery and manifest utilities
 export * from "./plugins";
+export * from "./prompt-set";
 export * from "./prompts";
 // Export onboarding providers
 export * from "./providers/onboarding-progress";

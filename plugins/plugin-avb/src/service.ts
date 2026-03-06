@@ -25,18 +25,23 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { type IAgentRuntime, Service, type Task } from "@elizaos/core";
+import {
+  type IAgentRuntime,
+  Service,
+  type Task,
+  toScryptedPayload,
+} from "@elizaos/core";
 import {
   type JobType,
   type NormalizedJobResult,
   SCRYPTEDAI_SERVICE_TYPE,
   type ScryptedAIService,
 } from "@elizaos/plugin-scryptedai";
-
 import {
   AVB_SERVICE_TYPE,
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
+  ENV_AVB_AUTOGEN_ON_BOOT,
   ENV_AVB_IMAGE_METHOD,
   PHASE_TICK_INTERVAL_MS,
   PIPELINE,
@@ -44,7 +49,7 @@ import {
   tagForRun,
   WORKER_NAMES,
 } from "./constants.ts";
-import { buildImagePromptRequest, digestCharacter } from "./introspect.ts";
+import { digestCharacter, imagePromptSet } from "./introspect.ts";
 import type {
   AvbPhaseMetadata,
   AvbRunContext,
@@ -143,6 +148,15 @@ export class AvbService extends Service {
     svc.rt.logger.info(
       `[avb] Service started (image method=${svc.imageMethod})`,
     );
+
+    // Autonomous trigger: generate an avatar on boot if one doesn't exist.
+    // Fire-and-forget so we don't block service startup.
+    void svc.autoStartIfNeeded().catch((err) => {
+      svc.rt.logger.warn(
+        `[avb] Auto-start check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+
     return svc;
   }
 
@@ -186,6 +200,67 @@ export class AvbService extends Service {
    */
   async getRunTasks(runId: string): Promise<Task[]> {
     return this.rt.getTasks({ tags: [tagForRun(runId)] });
+  }
+
+  // --------------------------------------------------------------------------
+  // Autonomous boot trigger
+  // --------------------------------------------------------------------------
+
+  /**
+   * Self-trigger avatar generation on boot if the agent has no avatar yet.
+   *
+   * Skips if:
+   * - AVB_AUTOGEN_ON_BOOT setting is explicitly "false" / "0"
+   * - An AVB run is already in flight (task rows exist — will resume on tick)
+   * - An avatar has already been delivered to the agent's room
+   *
+   * Target room is the agent's own agentId (identity room) — same convention
+   * as the proving script. Fire-and-forget: logged but never throws to caller.
+   */
+  private async autoStartIfNeeded(): Promise<void> {
+    const setting = this.rt.getSetting(ENV_AVB_AUTOGEN_ON_BOOT);
+    if (setting === "false" || setting === "0" || setting === false) {
+      this.rt.logger.debug("[avb] Auto-start disabled via setting");
+      return;
+    }
+
+    // In-flight run? (db-persisted tasks survive restart — let them resume)
+    const inFlight = await this.rt.getTasks({ tags: ["avb"] });
+    if (inFlight.length > 0) {
+      this.rt.logger.info(
+        `[avb] Auto-start: ${inFlight.length} run task(s) already in flight — resuming, not re-triggering`,
+      );
+      return;
+    }
+
+    // Already delivered? Check the agent's identity room for a prior avatar.
+    const roomId = this.rt.agentId;
+    const memories = await this.rt.getMemories({
+      roomId,
+      tableName: "messages",
+      count: 50,
+    });
+    const existing = memories.find((m) => {
+      const c = m.content as
+        | { source?: string; attachments?: unknown[] }
+        | undefined;
+      return (
+        c?.source === "avb" &&
+        Array.isArray(c.attachments) &&
+        c.attachments.length > 0
+      );
+    });
+    if (existing) {
+      this.rt.logger.info(
+        "[avb] Auto-start: avatar already delivered — skipping",
+      );
+      return;
+    }
+
+    this.rt.logger.info(
+      `[avb] Auto-start: no avatar found — triggering createRun(room=${roomId})`,
+    );
+    await this.createRun(roomId);
   }
 
   // --------------------------------------------------------------------------
@@ -346,13 +421,12 @@ export class AvbService extends Service {
           phase: "TEXT_PHASE",
           jobType: "text",
           submit: async (scrypted, ctx) => {
-            const { system_prompt, user_prompt } = buildImagePromptRequest(
-              ctx.characterDigest,
-            );
-            const { jobId } = await scrypted.startTextGeneration({
-              system_prompt,
-              user_prompt,
+            const rendered = imagePromptSet.render({
+              CHARACTER_DIGEST: ctx.characterDigest,
             });
+            const { jobId } = await scrypted.startTextGeneration(
+              toScryptedPayload(rendered),
+            );
             return jobId;
           },
           extract: (result, ctx) => {

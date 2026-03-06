@@ -7,7 +7,7 @@
  * and pipeline transitions.
  */
 
-import type { Task } from "@elizaos/core";
+import { getModelLimits, type Task } from "@elizaos/core";
 import type {
   JobRecord,
   JobTerminalListener,
@@ -15,6 +15,7 @@ import type {
 } from "@elizaos/plugin-scryptedai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tagForJob, tagForRun, WORKER_NAMES } from "../constants.ts";
+import { IMAGE_PROMPT_MODEL } from "../introspect.ts";
 import { AvbService } from "../service.ts";
 import type { AvbPhaseMetadata } from "../types.ts";
 
@@ -138,6 +139,11 @@ interface FakeRuntime {
   updateTask(id: string, partial: Partial<Task>): Promise<void>;
   deleteTask(id: string): Promise<void>;
   createMemory(mem: Record<string, unknown>, table: string): Promise<string>;
+  getMemories(params: {
+    roomId: string;
+    tableName: string;
+    count?: number;
+  }): Promise<Array<{ content?: Record<string, unknown> }>>;
   emitEvent(name: string, payload: unknown): Promise<void>;
   registerTaskWorker(w: {
     name: string;
@@ -153,14 +159,20 @@ interface FakeRuntime {
   __memories: Array<Record<string, unknown>>;
   __events: Array<{ name: string; payload: unknown }>;
   __scrypted: FakeScrypted;
+  __settings: Map<string, unknown>;
 }
 
-function makeFakeRuntime(): FakeRuntime {
+function makeFakeRuntime(settings: Record<string, unknown> = {}): FakeRuntime {
   const tasks = new Map<string, Task>();
   const workers: WorkerMap = new Map();
   const memories: Array<Record<string, unknown>> = [];
   const events: Array<{ name: string; payload: unknown }> = [];
   const scrypted = makeFakeScrypted();
+  // Default autogen OFF in tests so existing assertions (task counts etc.)
+  // remain deterministic. Individual tests override via the settings param.
+  const settingsMap = new Map<string, unknown>(
+    Object.entries({ AVB_AUTOGEN_ON_BOOT: "false", ...settings }),
+  );
   let nextId = 1;
 
   return {
@@ -185,8 +197,8 @@ function makeFakeRuntime(): FakeRuntime {
       if (type === "scryptedai") return scrypted;
       throw new Error(`Service ${type} not found`);
     },
-    getSetting(_key: string) {
-      return undefined;
+    getSetting(key: string) {
+      return settingsMap.get(key);
     },
     async createTask(task: Task): Promise<string> {
       const id = `task-${nextId++}`;
@@ -219,6 +231,15 @@ function makeFakeRuntime(): FakeRuntime {
       memories.push({ ...mem, id });
       return id;
     },
+    async getMemories(params: {
+      roomId: string;
+      tableName: string;
+      count?: number;
+    }): Promise<Array<{ content?: Record<string, unknown> }>> {
+      const matching = memories.filter((m) => m.roomId === params.roomId);
+      const limited = params.count ? matching.slice(0, params.count) : matching;
+      return limited as Array<{ content?: Record<string, unknown> }>;
+    },
     async emitEvent(name: string, payload: unknown): Promise<void> {
       events.push({ name, payload });
     },
@@ -230,7 +251,19 @@ function makeFakeRuntime(): FakeRuntime {
     __memories: memories,
     __events: events,
     __scrypted: scrypted,
+    __settings: settingsMap,
   };
+}
+
+/**
+ * Flush microtasks so fire-and-forget promises (autoStartIfNeeded) settle
+ * before assertions run. Two awaits cover the promise-chain depth
+ * (getTasks → getMemories → createRun).
+ */
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 /** Simulate a TaskService tick: execute every registered worker for its matching tasks. */
@@ -283,6 +316,77 @@ describe("AvbService: start() + worker registration", () => {
   });
 });
 
+describe("AvbService: autonomous avatar generation on boot", () => {
+  it("self-triggers createRun when no avatar exists and autogen enabled", async () => {
+    const rt = makeFakeRuntime({ AVB_AUTOGEN_ON_BOOT: "true" });
+    await AvbService.start(rt as never);
+    await flush();
+
+    // A TEXT_PHASE task was spawned for the agent's own room
+    expect(rt.__tasks.size).toBe(1);
+    const task = [...rt.__tasks.values()][0];
+    expect(task.name).toBe(WORKER_NAMES.TEXT_PHASE);
+    const meta = metaOf(task);
+    expect(meta.runContext.roomId).toBe("agent-123");
+    // Character digest was frozen at boot
+    expect(meta.runContext.characterDigest).toContain("TestAgent");
+  });
+
+  it("skips when a run is already in flight (idempotent across restarts)", async () => {
+    const rt = makeFakeRuntime({ AVB_AUTOGEN_ON_BOOT: "true" });
+    // Seed an existing AVB task row (simulating a restart mid-run)
+    await rt.createTask({
+      name: WORKER_NAMES.TEXT_PHASE,
+      tags: ["queue", "repeat", "avb", tagForRun("prior-run")],
+      metadata: {} as never,
+    } as Task);
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    // Still exactly the one pre-existing task — no duplicate run spawned
+    expect(rt.__tasks.size).toBe(1);
+  });
+
+  it("skips when an avatar was already delivered to the agent's room", async () => {
+    const rt = makeFakeRuntime({ AVB_AUTOGEN_ON_BOOT: "true" });
+    // Seed a prior delivered avatar memory
+    rt.__memories.push({
+      roomId: "agent-123",
+      content: {
+        source: "avb",
+        attachments: [{ url: "https://cdn.example/prior.png" }],
+      },
+    });
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    expect(rt.__tasks.size).toBe(0);
+  });
+
+  it("skips when AVB_AUTOGEN_ON_BOOT is explicitly false", async () => {
+    const rt = makeFakeRuntime({ AVB_AUTOGEN_ON_BOOT: "false" });
+    await AvbService.start(rt as never);
+    await flush();
+
+    expect(rt.__tasks.size).toBe(0);
+  });
+
+  it("autogen default-on: fires when setting is absent", async () => {
+    const rt = makeFakeRuntime();
+    // Remove the test-fixture default-off so we exercise the real default
+    rt.__settings.delete("AVB_AUTOGEN_ON_BOOT");
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    // Default-on: a run was triggered
+    expect(rt.__tasks.size).toBe(1);
+    expect([...rt.__tasks.values()][0].name).toBe(WORKER_NAMES.TEXT_PHASE);
+  });
+});
+
 describe("AvbService: createRun() spawns TEXT_PHASE task", () => {
   it("creates a TEXT_PHASE task with correct tags + metadata", async () => {
     const rt = makeFakeRuntime();
@@ -331,11 +435,11 @@ describe("TEXT_PHASE worker: idempotent lifecycle", () => {
     runId = await svc.createRun("room-1");
   });
 
-  it("tick 1: submits text gen with system+user prompt pair and persists jobId + tag", async () => {
+  it("tick 1: submits text gen with PromptSet-rendered payload and persists jobId + tag", async () => {
     await tick(rt);
 
     expect(rt.__scrypted.startTextGeneration).toHaveBeenCalledTimes(1);
-    // Verify system/user prompt pair is sent
+    // Verify the PromptSet → toScryptedPayload wire shape
     const call = (rt.__scrypted.startTextGeneration as ReturnType<typeof vi.fn>)
       .mock.calls[0];
     const payload = call[0] as Record<string, unknown>;
@@ -343,6 +447,13 @@ describe("TEXT_PHASE worker: idempotent lifecycle", () => {
     expect(typeof payload.user_prompt).toBe("string");
     expect(payload.system_prompt).toContain("visual prompt engineer");
     expect(payload.user_prompt).toContain("TestAgent");
+    // max_tokens comes from the model registry via IMAGE_PROMPT_MODEL —
+    // no hardcoded numbers; if the registry changes this test stays valid.
+    expect(payload.max_tokens).toBe(
+      getModelLimits(IMAGE_PROMPT_MODEL).maxOutputTokens,
+    );
+    // System and user are distinct (PromptSet keeps them separate)
+    expect(payload.system_prompt).not.toContain("TestAgent");
 
     const task = [...rt.__tasks.values()][0];
     const jobId = jobIdOf(task);
