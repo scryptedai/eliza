@@ -1,7 +1,7 @@
+use computeruse::selector::Selector as ComputerUseSelector;
 use napi::bindgen_prelude::FromNapiValue;
 use napi_derive::napi;
 use std::collections::BTreeMap;
-use computeruse::selector::Selector as ComputerUseSelector;
 
 /// Selector for locating UI elements. Provides a typed alternative to the string based selector API.
 #[napi(js_name = "Selector")]

@@ -666,20 +666,31 @@ impl Desktop {
         self.inner.stop_execution();
     }
 
-    #[pyo3(name = "click_at_coordinates", text_signature = "($self, x, y, restore_cursor=False)")]
+    #[pyo3(
+        name = "click_at_coordinates",
+        text_signature = "($self, x, y, restore_cursor=False)"
+    )]
     /// Click at specific screen coordinates.
     ///
     /// Args:
     ///     x (float): X coordinate.
     ///     y (float): Y coordinate.
     ///     restore_cursor (bool): Whether to restore cursor position after clicking.
-    pub fn click_at_coordinates(&self, x: f64, y: f64, restore_cursor: Option<bool>) -> PyResult<()> {
+    pub fn click_at_coordinates(
+        &self,
+        x: f64,
+        y: f64,
+        restore_cursor: Option<bool>,
+    ) -> PyResult<()> {
         self.inner
             .click_at_coordinates(x, y, restore_cursor.unwrap_or(false))
             .map_err(automation_error_to_pyerr)
     }
 
-    #[pyo3(name = "capture_screenshot", text_signature = "($self, monitor_id=None)")]
+    #[pyo3(
+        name = "capture_screenshot",
+        text_signature = "($self, monitor_id=None)"
+    )]
     /// (async) Capture a screenshot of a monitor or the primary monitor.
     ///
     /// Args:
@@ -695,10 +706,16 @@ impl Desktop {
         let desktop = self.inner.clone();
         pyo3_tokio::future_into_py_with_locals(py, TaskLocals::with_running_loop(py)?, async move {
             let result = if let Some(id) = monitor_id {
-                let monitor = desktop.get_monitor_by_id(&id).await.map_err(automation_error_to_pyerr)?;
+                let monitor = desktop
+                    .get_monitor_by_id(&id)
+                    .await
+                    .map_err(automation_error_to_pyerr)?;
                 desktop.capture_monitor(&monitor).await
             } else {
-                let monitor = desktop.get_primary_monitor().await.map_err(automation_error_to_pyerr)?;
+                let monitor = desktop
+                    .get_primary_monitor()
+                    .await
+                    .map_err(automation_error_to_pyerr)?;
                 desktop.capture_monitor(&monitor).await
             };
             result
@@ -707,7 +724,10 @@ impl Desktop {
         })
     }
 
-    #[pyo3(name = "screenshot_to_base64_png", text_signature = "($self, screenshot)")]
+    #[pyo3(
+        name = "screenshot_to_base64_png",
+        text_signature = "($self, screenshot)"
+    )]
     /// Convert a screenshot to a base64-encoded PNG string.
     ///
     /// Args:
@@ -717,9 +737,9 @@ impl Desktop {
     ///     str: Base64-encoded PNG string.
     pub fn screenshot_to_base64_png(&self, screenshot: ScreenshotResult) -> PyResult<String> {
         let rust_screenshot: computeruse_core::ScreenshotResult = screenshot.into();
-        let png_bytes = rust_screenshot
-            .to_png()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to encode PNG: {e}")))?;
+        let png_bytes = rust_screenshot.to_png().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to encode PNG: {e}"))
+        })?;
         Ok(base64::engine::general_purpose::STANDARD.encode(&png_bytes))
     }
 
@@ -733,12 +753,15 @@ impl Desktop {
     ///     bytes: PNG bytes.
     pub fn screenshot_to_png(&self, screenshot: ScreenshotResult) -> PyResult<Vec<u8>> {
         let rust_screenshot: computeruse_core::ScreenshotResult = screenshot.into();
-        rust_screenshot
-            .to_png()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to encode PNG: {e}")))
+        rust_screenshot.to_png().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to encode PNG: {e}"))
+        })
     }
 
-    #[pyo3(name = "close_tab", text_signature = "($self, tab_index=None, browser_name=None, window_title=None)")]
+    #[pyo3(
+        name = "close_tab",
+        text_signature = "($self, tab_index=None, browser_name=None, window_title=None)"
+    )]
     /// (async) Close the current browser tab (Ctrl+W / Cmd+W).
     ///
     /// Args:

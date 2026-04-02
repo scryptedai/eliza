@@ -250,7 +250,9 @@ impl TreeBuildConfig {
         batch_size: Option<usize>,
     ) -> Self {
         TreeBuildConfig {
-            property_mode: property_mode.unwrap_or_else(|| PropertyLoadingMode { mode: "Fast".to_string() }),
+            property_mode: property_mode.unwrap_or_else(|| PropertyLoadingMode {
+                mode: "Fast".to_string(),
+            }),
             timeout_per_operation_ms,
             yield_every_n_elements,
             batch_size,

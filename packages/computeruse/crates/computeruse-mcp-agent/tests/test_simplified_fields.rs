@@ -1,6 +1,6 @@
-use serde_json::json;
 use computeruse_mcp_agent::duration_parser::parse_duration;
 use computeruse_mcp_agent::utils::{ExecuteSequenceArgs, SequenceStep};
+use serde_json::json;
 
 #[test]
 fn test_duration_parser() {

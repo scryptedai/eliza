@@ -1,11 +1,14 @@
 pub mod cancellation;
+pub mod canvas;
 pub mod child_process;
 pub mod duration_parser;
 pub mod elicitation;
 pub mod event_pipe;
+pub mod exec_policy;
 pub mod execution_logger;
 pub mod expression_eval;
 pub mod helpers;
+pub mod idempotency;
 pub mod log_pipe;
 pub mod mcp_types;
 pub mod omniparser;

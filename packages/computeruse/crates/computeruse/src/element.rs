@@ -783,12 +783,14 @@ pub trait UIElementImpl: Send + Sync + Debug {
                     #[cfg(target_os = "windows")]
                     {
                         use crate::platforms::windows::element::WorkArea;
-                        WorkArea::get_primary().ok().map(|work_area| crate::WorkAreaBounds {
-                            x: work_area.x,
-                            y: work_area.y,
-                            width: work_area.width as u32,
-                            height: work_area.height as u32,
-                        })
+                        WorkArea::get_primary()
+                            .ok()
+                            .map(|work_area| crate::WorkAreaBounds {
+                                x: work_area.x,
+                                y: work_area.y,
+                                width: work_area.width as u32,
+                                height: work_area.height as u32,
+                            })
                     }
                     #[cfg(not(target_os = "windows"))]
                     {
@@ -869,12 +871,14 @@ pub trait UIElementImpl: Send + Sync + Debug {
                     #[cfg(target_os = "windows")]
                     {
                         use crate::platforms::windows::element::WorkArea;
-                        WorkArea::get_primary().ok().map(|work_area| crate::WorkAreaBounds {
-                            x: work_area.x,
-                            y: work_area.y,
-                            width: work_area.width as u32,
-                            height: work_area.height as u32,
-                        })
+                        WorkArea::get_primary()
+                            .ok()
+                            .map(|work_area| crate::WorkAreaBounds {
+                                x: work_area.x,
+                                y: work_area.y,
+                                width: work_area.width as u32,
+                                height: work_area.height as u32,
+                            })
                     }
                     #[cfg(not(target_os = "windows"))]
                     {

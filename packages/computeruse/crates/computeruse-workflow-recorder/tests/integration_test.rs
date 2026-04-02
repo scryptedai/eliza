@@ -1,6 +1,6 @@
-use std::time::Duration;
 use computeruse::Desktop;
 use computeruse_workflow_recorder::{WorkflowEvent, WorkflowRecorder, WorkflowRecorderConfig};
+use std::time::Duration;
 use tokio_stream::StreamExt;
 
 /// End-to-end integration test for text input completion feature

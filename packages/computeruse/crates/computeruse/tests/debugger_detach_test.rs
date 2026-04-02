@@ -1,3 +1,4 @@
+use computeruse::{Browser, Desktop};
 /// Test to reproduce "Failed to enable debugger domains: Debugger is not attached" error
 ///
 /// This error occurs when:
@@ -6,7 +7,6 @@
 /// 3. Try to execute JS again on same tab (extension thinks it's attached but it's not)
 /// 4. Chrome rejects: "Debugger is not attached to the tab with id: XXXXX"
 use std::time::Duration;
-use computeruse::{Browser, Desktop};
 
 #[tokio::test]
 #[ignore] // Extension client connection timeout in CI

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
 use computeruse::extension_bridge::ExtensionBridge;
+use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[tokio::test]

@@ -1,5 +1,5 @@
-use std::time::Duration;
 use computeruse::{Desktop, Selector};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

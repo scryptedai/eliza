@@ -1,9 +1,9 @@
-use std::time::Duration;
 use computeruse::Desktop;
 use computeruse_workflow_recorder::{
     TextInputCompletedEvent, TextInputMethod, WorkflowEvent, WorkflowRecorder,
     WorkflowRecorderConfig,
 };
+use std::time::Duration;
 use tokio::time::sleep;
 use tokio_stream::{Stream, StreamExt};
 

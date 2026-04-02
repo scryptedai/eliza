@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(not(target_os = "windows"))]
-use enigo::{Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-#[cfg(not(target_os = "windows"))]
 use enigo::Axis;
+#[cfg(not(target_os = "windows"))]
+use enigo::{Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
 // AT-SPI2 support via D-Bus
 use atspi::proxy::accessible::AccessibleProxy;
@@ -156,7 +156,10 @@ impl UIElementImpl for LinuxUIElement {
         enigo
             .button(Button::Left, Direction::Click)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to double click: {e}")))?;
-        Ok(crate::ClickResult { details: "Double clicked center of bounds".to_string(), ..r })
+        Ok(crate::ClickResult {
+            details: "Double clicked center of bounds".to_string(),
+            ..r
+        })
     }
     fn right_click(&self) -> Result<(), AutomationError> {
         let (x, y, w, h) = self.bounds()?;
@@ -306,13 +309,21 @@ impl UIElementImpl for LinuxUIElement {
     ) -> Result<(), AutomationError> {
         let mut enigo = LinuxEngine::enigo()?;
         enigo
-            .move_mouse(start_x.round() as i32, start_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                start_x.round() as i32,
+                start_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Press)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to press: {e}")))?;
         enigo
-            .move_mouse(end_x.round() as i32, end_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                end_x.round() as i32,
+                end_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Release)
@@ -324,9 +335,9 @@ impl UIElementImpl for LinuxUIElement {
         enigo
             .move_mouse(x.round() as i32, y.round() as i32, enigo::Coordinate::Abs)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
-        enigo
-            .button(Button::Left, Direction::Press)
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to click and hold: {e}")))?;
+        enigo.button(Button::Left, Direction::Press).map_err(|e| {
+            AutomationError::PlatformError(format!("Failed to click and hold: {e}"))
+        })?;
         Ok(())
     }
     fn mouse_move(&self, x: f64, y: f64) -> Result<(), AutomationError> {
@@ -722,18 +733,20 @@ impl LinuxATSPIElement {
         connection: Arc<ZbusConnection>,
     ) -> Result<Self, AutomationError> {
         let object_id = NEXT_OBJECT_ID.fetch_add(1, Ordering::Relaxed);
-        
+
         let name = proxy.name().await.unwrap_or_default();
-        let role = proxy.get_role().await
+        let role = proxy
+            .get_role()
+            .await
             .map(|r| format!("{:?}", r))
             .unwrap_or_else(|_| "Unknown".to_string());
-        
+
         // TODO: derive real PID from AT-SPI metadata when available.
         let pid = 0;
-        
+
         // Get bounds via Component interface
         let bounds = Self::get_bounds_from_proxy(proxy).await;
-        
+
         // Get states
         let states = proxy
             .get_state()
@@ -743,10 +756,10 @@ impl LinuxATSPIElement {
                 HashSet::new()
             })
             .unwrap_or_default();
-        
+
         let bus_name = proxy.inner().destination().to_string();
         let path = proxy.inner().path().to_string();
-        
+
         Ok(Self {
             info: ATSPIElementInfo {
                 object_id,
@@ -761,16 +774,16 @@ impl LinuxATSPIElement {
             connection,
         })
     }
-    
+
     async fn get_bounds_from_proxy(proxy: &AccessibleProxy<'_>) -> Option<(f64, f64, f64, f64)> {
         // AT-SPI2 uses the Component interface for geometry
         // We need to query the component interface for extents
         use atspi::proxy::component::ComponentProxy;
-        
+
         let conn = proxy.inner().connection();
         let dest = proxy.inner().destination().to_string();
         let path = proxy.inner().path().to_string();
-        
+
         let component = ComponentProxy::builder(conn)
             .destination(dest.as_str())
             .ok()?
@@ -779,10 +792,10 @@ impl LinuxATSPIElement {
             .build()
             .await
             .ok()?;
-        
+
         // Get extents in screen coordinates
         let extents = component.get_extents(atspi::CoordType::Screen).await.ok()?;
-        
+
         Some((
             extents.0 as f64,
             extents.1 as f64,
@@ -790,14 +803,14 @@ impl LinuxATSPIElement {
             extents.3 as f64,
         ))
     }
-    
+
     fn click_center_with_enigo(&self) -> Result<crate::ClickResult, AutomationError> {
         let (x, y, w, h) = self.info.bounds.ok_or_else(|| {
             AutomationError::UnsupportedOperation("bounds unavailable for element".to_string())
         })?;
         let cx = x + w / 2.0;
         let cy = y + h / 2.0;
-        
+
         let mut enigo = LinuxEngine::enigo()?;
         enigo
             .move_mouse(cx.round() as i32, cy.round() as i32, enigo::Coordinate::Abs)
@@ -805,7 +818,7 @@ impl LinuxATSPIElement {
         enigo
             .button(Button::Left, Direction::Click)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to click: {e}")))?;
-        
+
         Ok(crate::ClickResult {
             method: "linux:atspi:enigo".to_string(),
             coordinates: Some((cx, cy)),
@@ -818,50 +831,53 @@ impl UIElementImpl for LinuxATSPIElement {
     fn object_id(&self) -> usize {
         self.info.object_id
     }
-    
+
     fn id(&self) -> Option<String> {
         Some(format!("atspi:{}:{}", self.info.bus_name, self.info.path))
     }
-    
+
     fn role(&self) -> String {
         self.info.role.clone()
     }
-    
+
     fn attributes(&self) -> UIElementAttributes {
         let mut attrs = UIElementAttributes::default();
         attrs.role = self.info.role.clone();
         attrs.name = Some(self.info.name.clone());
         attrs
     }
-    
+
     fn children(&self) -> Result<Vec<UIElement>, AutomationError> {
         // Children require async - return empty for now, use tree building instead
         Ok(Vec::new())
     }
-    
+
     fn parent(&self) -> Result<Option<UIElement>, AutomationError> {
         Ok(None)
     }
-    
+
     fn bounds(&self) -> Result<(f64, f64, f64, f64), AutomationError> {
         self.info.bounds.ok_or_else(|| {
             AutomationError::UnsupportedOperation("bounds unavailable for element".to_string())
         })
     }
-    
+
     fn click(&self) -> Result<crate::ClickResult, AutomationError> {
         self.click_center_with_enigo()
     }
-    
+
     fn double_click(&self) -> Result<crate::ClickResult, AutomationError> {
         let r = self.click()?;
         let mut enigo = LinuxEngine::enigo()?;
         enigo
             .button(Button::Left, Direction::Click)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to double click: {e}")))?;
-        Ok(crate::ClickResult { details: "Double clicked AT-SPI2 element".to_string(), ..r })
+        Ok(crate::ClickResult {
+            details: "Double clicked AT-SPI2 element".to_string(),
+            ..r
+        })
     }
-    
+
     fn right_click(&self) -> Result<(), AutomationError> {
         let (x, y, w, h) = self.bounds()?;
         let cx = x + w / 2.0;
@@ -875,7 +891,7 @@ impl UIElementImpl for LinuxATSPIElement {
             .map_err(|e| AutomationError::PlatformError(format!("Failed to right click: {e}")))?;
         Ok(())
     }
-    
+
     fn hover(&self) -> Result<(), AutomationError> {
         let (x, y, w, h) = self.bounds()?;
         let cx = x + w / 2.0;
@@ -886,19 +902,19 @@ impl UIElementImpl for LinuxATSPIElement {
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         Ok(())
     }
-    
+
     fn focus(&self) -> Result<(), AutomationError> {
         // AT-SPI2 has a FocusGrab action on some elements
         Ok(())
     }
-    
+
     fn invoke(&self) -> Result<(), AutomationError> {
         // AT-SPI2 Action interface - would need async
         Err(AutomationError::UnsupportedOperation(
             "invoke via AT-SPI2 Action not implemented yet".to_string(),
         ))
     }
-    
+
     fn type_text(
         &self,
         text: &str,
@@ -908,12 +924,12 @@ impl UIElementImpl for LinuxATSPIElement {
         _restore_focus: bool,
     ) -> Result<(), AutomationError> {
         let mut enigo = LinuxEngine::enigo()?;
-        enigo.text(text).map_err(|e| {
-            AutomationError::PlatformError(format!("Failed to type text: {e}"))
-        })?;
+        enigo
+            .text(text)
+            .map_err(|e| AutomationError::PlatformError(format!("Failed to type text: {e}")))?;
         Ok(())
     }
-    
+
     fn press_key(
         &self,
         key: &str,
@@ -923,50 +939,50 @@ impl UIElementImpl for LinuxATSPIElement {
     ) -> Result<(), AutomationError> {
         LinuxEngine::send_key_sequence(key)
     }
-    
+
     fn get_text(&self, _max_depth: usize) -> Result<String, AutomationError> {
         // AT-SPI2 Text interface - would need async
         Ok(self.info.name.clone())
     }
-    
+
     fn set_value(&self, _value: &str) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "set_value via AT-SPI2 not implemented yet".to_string(),
         ))
     }
-    
+
     fn get_value(&self) -> Result<Option<String>, AutomationError> {
         Ok(Some(self.info.name.clone()))
     }
-    
+
     fn is_enabled(&self) -> Result<bool, AutomationError> {
         Ok(!self.info.states.contains("disabled"))
     }
-    
+
     fn is_visible(&self) -> Result<bool, AutomationError> {
         Ok(self.info.states.contains("visible") || self.info.states.contains("showing"))
     }
-    
+
     fn is_focused(&self) -> Result<bool, AutomationError> {
         Ok(self.info.states.contains("focused"))
     }
-    
+
     fn perform_action(&self, _action: &str) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "perform_action via AT-SPI2 not implemented yet".to_string(),
         ))
     }
-    
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-    
+
     fn create_locator(&self, _selector: Selector) -> Result<crate::Locator, AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "element.locator not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn scroll(&self, direction: &str, amount: f64) -> Result<(), AutomationError> {
         let mut enigo = LinuxEngine::enigo()?;
         let (len, axis) = match direction.to_lowercase().as_str() {
@@ -980,54 +996,54 @@ impl UIElementImpl for LinuxATSPIElement {
                 )))
             }
         };
-        enigo.scroll(len, axis).map_err(|e| {
-            AutomationError::PlatformError(format!("Failed to scroll: {e}"))
-        })?;
+        enigo
+            .scroll(len, axis)
+            .map_err(|e| AutomationError::PlatformError(format!("Failed to scroll: {e}")))?;
         Ok(())
     }
-    
+
     fn activate_window(&self) -> Result<(), AutomationError> {
         Ok(())
     }
-    
+
     fn minimize_window(&self) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "minimize_window not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn maximize_window(&self) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "maximize_window not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn maximize_window_keyboard(&self) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "maximize_window_keyboard not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn minimize_window_keyboard(&self) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "minimize_window_keyboard not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn get_native_window_handle(&self) -> Result<isize, AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "native window handle not available for AT-SPI2".to_string(),
         ))
     }
-    
+
     fn clone_box(&self) -> Box<dyn UIElementImpl> {
         Box::new(self.clone())
     }
-    
+
     fn is_keyboard_focusable(&self) -> Result<bool, AutomationError> {
         Ok(self.info.states.contains("focusable"))
     }
-    
+
     fn mouse_drag(
         &self,
         start_x: f64,
@@ -1037,31 +1053,39 @@ impl UIElementImpl for LinuxATSPIElement {
     ) -> Result<(), AutomationError> {
         let mut enigo = LinuxEngine::enigo()?;
         enigo
-            .move_mouse(start_x.round() as i32, start_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                start_x.round() as i32,
+                start_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Press)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to press: {e}")))?;
         enigo
-            .move_mouse(end_x.round() as i32, end_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                end_x.round() as i32,
+                end_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Release)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to release: {e}")))?;
         Ok(())
     }
-    
+
     fn mouse_click_and_hold(&self, x: f64, y: f64) -> Result<(), AutomationError> {
         let mut enigo = LinuxEngine::enigo()?;
         enigo
             .move_mouse(x.round() as i32, y.round() as i32, enigo::Coordinate::Abs)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
-        enigo
-            .button(Button::Left, Direction::Press)
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to click and hold: {e}")))?;
+        enigo.button(Button::Left, Direction::Press).map_err(|e| {
+            AutomationError::PlatformError(format!("Failed to click and hold: {e}"))
+        })?;
         Ok(())
     }
-    
+
     fn mouse_move(&self, x: f64, y: f64) -> Result<(), AutomationError> {
         let mut enigo = LinuxEngine::enigo()?;
         enigo
@@ -1069,7 +1093,7 @@ impl UIElementImpl for LinuxATSPIElement {
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         Ok(())
     }
-    
+
     fn mouse_release(&self) -> Result<(), AutomationError> {
         let mut enigo = LinuxEngine::enigo()?;
         enigo
@@ -1077,15 +1101,15 @@ impl UIElementImpl for LinuxATSPIElement {
             .map_err(|e| AutomationError::PlatformError(format!("Failed to release: {e}")))?;
         Ok(())
     }
-    
+
     fn application(&self) -> Result<Option<UIElement>, AutomationError> {
         Ok(None)
     }
-    
+
     fn window(&self) -> Result<Option<UIElement>, AutomationError> {
         Ok(None)
     }
-    
+
     fn highlight(
         &self,
         _color: Option<u32>,
@@ -1098,71 +1122,71 @@ impl UIElementImpl for LinuxATSPIElement {
             "highlight not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn set_transparency(&self, _percentage: u8) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "set_transparency not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn process_id(&self) -> Result<u32, AutomationError> {
         Ok(self.info.pid)
     }
-    
+
     fn url(&self) -> Option<String> {
         None
     }
-    
+
     fn capture(&self) -> Result<crate::ScreenshotResult, AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "element.capture not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn close(&self) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "close not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn select_option(&self, _option_name: &str) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "select_option not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn list_options(&self) -> Result<Vec<String>, AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "list_options not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn is_toggled(&self) -> Result<bool, AutomationError> {
         Ok(self.info.states.contains("checked") || self.info.states.contains("pressed"))
     }
-    
+
     fn set_toggled(&self, _state: bool) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "set_toggled not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn get_range_value(&self) -> Result<f64, AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "get_range_value not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn set_range_value(&self, _value: f64) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "set_range_value not implemented for AT-SPI2 yet".to_string(),
         ))
     }
-    
+
     fn is_selected(&self) -> Result<bool, AutomationError> {
         Ok(self.info.states.contains("selected"))
     }
-    
+
     fn set_selected(&self, _state: bool) -> Result<(), AutomationError> {
         Err(AutomationError::UnsupportedOperation(
             "set_selected not implemented for AT-SPI2 yet".to_string(),
@@ -1190,24 +1214,16 @@ fn atspi_matches_selector(info: &ATSPIElementInfo, selector: &Selector) -> bool 
             info.name.eq_ignore_ascii_case(name)
                 || info.name.to_lowercase().contains(&name.to_lowercase())
         }
-        Selector::Id(id) | Selector::NativeId(id) => {
-            info.path.contains(id)
-        }
-        Selector::Text(text) => {
-            info.name.to_lowercase().contains(&text.to_lowercase())
-        }
-        Selector::And(selectors) => {
-            selectors.iter().all(|s| atspi_matches_selector(info, s))
-        }
-        Selector::Or(selectors) => {
-            selectors.iter().any(|s| atspi_matches_selector(info, s))
-        }
-        Selector::Not(inner) => {
-            !atspi_matches_selector(info, inner)
-        }
+        Selector::Id(id) | Selector::NativeId(id) => info.path.contains(id),
+        Selector::Text(text) => info.name.to_lowercase().contains(&text.to_lowercase()),
+        Selector::And(selectors) => selectors.iter().all(|s| atspi_matches_selector(info, s)),
+        Selector::Or(selectors) => selectors.iter().any(|s| atspi_matches_selector(info, s)),
+        Selector::Not(inner) => !atspi_matches_selector(info, inner),
         Selector::Chain(parts) => {
             // For chain selectors, we only match the first part at this level
-            parts.first().map_or(false, |first| atspi_matches_selector(info, first))
+            parts
+                .first()
+                .map_or(false, |first| atspi_matches_selector(info, first))
         }
         // Not yet supported for AT-SPI2
         Selector::Path(_)
@@ -1237,9 +1253,9 @@ async fn build_atspi_tree(
     depth: usize,
 ) -> Result<UINode, AutomationError> {
     let element = LinuxATSPIElement::from_proxy(proxy, connection.clone()).await?;
-    
+
     let mut children_nodes = Vec::new();
-    
+
     if depth < config.max_depth.unwrap_or(10) {
         // Get children count
         if let Ok(child_count) = proxy.child_count().await {
@@ -1249,7 +1265,7 @@ async fn build_atspi_tree(
                         .destination(child_ref.name.as_str())
                         .ok()
                         .and_then(|b| b.path(child_ref.path.as_str()).ok());
-                    
+
                     if let Some(builder) = child_proxy {
                         if let Ok(child_proxy) = builder.build().await {
                             if let Ok(child_node) = Box::pin(build_atspi_tree(
@@ -1257,7 +1273,9 @@ async fn build_atspi_tree(
                                 connection.clone(),
                                 config,
                                 depth + 1,
-                            )).await {
+                            ))
+                            .await
+                            {
                                 children_nodes.push(child_node);
                             }
                         }
@@ -1266,12 +1284,12 @@ async fn build_atspi_tree(
             }
         }
     }
-    
+
     let mut attrs = UIElementAttributes::default();
     attrs.role = element.info.role.clone();
     attrs.name = Some(element.info.name.clone());
     attrs.bounds = element.info.bounds;
-    
+
     Ok(UINode {
         id: element.id(),
         attributes: attrs,
@@ -1293,16 +1311,16 @@ async fn find_atspi_elements(
     if max_results.map_or(false, |max| results.len() >= max) {
         return Ok(());
     }
-    
+
     let element = LinuxATSPIElement::from_proxy(proxy, connection.clone()).await?;
-    
+
     if atspi_matches_selector(&element.info, selector) {
         results.push(element);
         if max_results.map_or(false, |max| results.len() >= max) {
             return Ok(());
         }
     }
-    
+
     if depth < max_depth {
         if let Ok(child_count) = proxy.child_count().await {
             for i in 0..child_count {
@@ -1311,7 +1329,7 @@ async fn find_atspi_elements(
                         .destination(child_ref.name.as_str())
                         .ok()
                         .and_then(|b| b.path(child_ref.path.as_str()).ok());
-                    
+
                     if let Some(builder) = child_proxy {
                         if let Ok(child_proxy) = builder.build().await {
                             Box::pin(find_atspi_elements(
@@ -1322,14 +1340,15 @@ async fn find_atspi_elements(
                                 max_results,
                                 depth + 1,
                                 max_depth,
-                            )).await?;
+                            ))
+                            .await?;
                         }
                     }
                 }
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1347,12 +1366,16 @@ impl LinuxEngine {
     }
 
     fn root_element(&self) -> UIElement {
-        UIElement::new(Box::new(StubElement::new("Desktop", Some("Linux".to_string()))))
+        UIElement::new(Box::new(StubElement::new(
+            "Desktop",
+            Some("Linux".to_string()),
+        )))
     }
 
     fn monitor_list(&self) -> Result<Vec<xcap::Monitor>, AutomationError> {
-        xcap::Monitor::all()
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to enumerate monitors: {e}")))
+        xcap::Monitor::all().map_err(|e| {
+            AutomationError::PlatformError(format!("Failed to enumerate monitors: {e}"))
+        })
     }
 
     fn enigo() -> Result<Enigo, AutomationError> {
@@ -1433,9 +1456,9 @@ impl LinuxEngine {
                 AutomationError::InvalidArgument("Invalid UTF-8 in key sequence".to_string())
             })?;
             let s = ch.to_string();
-            enigo.text(&s).map_err(|e| {
-                AutomationError::PlatformError(format!("Failed to type text: {e}"))
-            })?;
+            enigo
+                .text(&s)
+                .map_err(|e| AutomationError::PlatformError(format!("Failed to type text: {e}")))?;
 
             for m in held_mods.drain(..).rev() {
                 let _ = enigo.key(m, Direction::Release);
@@ -1510,10 +1533,22 @@ impl LinuxEngine {
                 Some(p) => p,
                 None => continue,
             };
-            let x = parts.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-            let y = parts.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-            let w = parts.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-            let h = parts.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let x = parts
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let y = parts
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let w = parts
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let h = parts
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
             // host
             let _host = parts.next();
             let title = parts.collect::<Vec<&str>>().join(" ");
@@ -1568,7 +1603,9 @@ impl LinuxEngine {
             .stdin(Stdio::null())
             .output()
             .map_err(|e| AutomationError::PlatformError(format!("Failed to run xdotool: {e}")))?;
-        let title = String::from_utf8_lossy(&title_out.stdout).trim().to_string();
+        let title = String::from_utf8_lossy(&title_out.stdout)
+            .trim()
+            .to_string();
 
         // PID
         let pid_out = std::process::Command::new("xdotool")
@@ -1619,22 +1656,24 @@ impl LinuxEngine {
             process_name,
         })
     }
-    
+
     // =========================================================================
     // AT-SPI2 Async Helpers
     // =========================================================================
-    
+
     /// Connect to the AT-SPI2 accessibility bus
     async fn connect_atspi() -> Result<Arc<ZbusConnection>, AutomationError> {
-        let connection = AccessibilityConnection::new()
-            .await
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to connect to AT-SPI2: {e}")))?;
-        
+        let connection = AccessibilityConnection::new().await.map_err(|e| {
+            AutomationError::PlatformError(format!("Failed to connect to AT-SPI2: {e}"))
+        })?;
+
         Ok(Arc::new(connection.connection().clone()))
     }
-    
+
     /// Get the desktop root accessible from AT-SPI2 registry
-    async fn get_atspi_desktop(connection: &ZbusConnection) -> Result<AccessibleProxy<'_>, AutomationError> {
+    async fn get_atspi_desktop(
+        connection: &ZbusConnection,
+    ) -> Result<AccessibleProxy<'_>, AutomationError> {
         // AT-SPI2 registry path
         let proxy = AccessibleProxy::builder(connection)
             .destination("org.a11y.atspi.Registry")
@@ -1643,76 +1682,113 @@ impl LinuxEngine {
             .map_err(|e| AutomationError::PlatformError(format!("Failed to set path: {e}")))?
             .build()
             .await
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to build registry proxy: {e}")))?;
-        
+            .map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to build registry proxy: {e}"))
+            })?;
+
         Ok(proxy)
     }
-    
+
     /// Find a single element via AT-SPI2
     async fn find_element_atspi(selector: &Selector) -> Result<UIElement, AutomationError> {
         let connection = Self::connect_atspi().await?;
         let desktop = Self::get_atspi_desktop(&connection).await?;
-        
+
         let mut results = Vec::new();
-        find_atspi_elements(&desktop, connection.clone(), selector, &mut results, Some(1), 0, 15).await?;
-        
-        results.into_iter().next()
+        find_atspi_elements(
+            &desktop,
+            connection.clone(),
+            selector,
+            &mut results,
+            Some(1),
+            0,
+            15,
+        )
+        .await?;
+
+        results
+            .into_iter()
+            .next()
             .map(|el| UIElement::new(Box::new(el)))
-            .ok_or_else(|| AutomationError::ElementNotFound(format!("No element found for selector: {:?}", selector)))
+            .ok_or_else(|| {
+                AutomationError::ElementNotFound(format!(
+                    "No element found for selector: {:?}",
+                    selector
+                ))
+            })
     }
-    
+
     /// Find all matching elements via AT-SPI2
-    async fn find_elements_atspi(selector: &Selector, max_depth: usize) -> Result<Vec<UIElement>, AutomationError> {
+    async fn find_elements_atspi(
+        selector: &Selector,
+        max_depth: usize,
+    ) -> Result<Vec<UIElement>, AutomationError> {
         let connection = Self::connect_atspi().await?;
         let desktop = Self::get_atspi_desktop(&connection).await?;
-        
+
         let mut results = Vec::new();
-        find_atspi_elements(&desktop, connection.clone(), selector, &mut results, None, 0, max_depth).await?;
-        
-        Ok(results.into_iter().map(|el| UIElement::new(Box::new(el))).collect())
+        find_atspi_elements(
+            &desktop,
+            connection.clone(),
+            selector,
+            &mut results,
+            None,
+            0,
+            max_depth,
+        )
+        .await?;
+
+        Ok(results
+            .into_iter()
+            .map(|el| UIElement::new(Box::new(el)))
+            .collect())
     }
-    
+
     /// Build window tree via AT-SPI2
-    async fn build_window_tree_atspi(pid: u32, title: Option<&str>, config: &TreeBuildConfig) -> Result<UINode, AutomationError> {
+    async fn build_window_tree_atspi(
+        pid: u32,
+        title: Option<&str>,
+        config: &TreeBuildConfig,
+    ) -> Result<UINode, AutomationError> {
         let connection = Self::connect_atspi().await?;
         let desktop = Self::get_atspi_desktop(&connection).await?;
-        
+
         // Find matching application/window by PID or title
         let child_count = desktop.child_count().await.unwrap_or(0);
-        
+
         for i in 0..child_count {
             if let Ok(child_ref) = desktop.get_child_at_index(i).await {
                 let child_proxy = AccessibleProxy::builder(&*connection)
                     .destination(child_ref.name.as_str())
                     .ok()
                     .and_then(|b| b.path(child_ref.path.as_str()).ok());
-                
+
                 if let Some(builder) = child_proxy {
                     if let Ok(app_proxy) = builder.build().await {
                         // Check if this app matches our criteria
                         let app_name = app_proxy.name().await.unwrap_or_default();
-                        
+
                         // Check title match
                         let title_matches = title.map_or(true, |t| {
                             app_name.to_lowercase().contains(&t.to_lowercase())
                         });
-                        
+
                         // For PID matching, we'd need to query the application's PID
                         // via the Application interface - this is a simplification
                         let pid_matches = pid == 0 || title_matches;
-                        
+
                         if pid_matches && title_matches {
-                            return build_atspi_tree(&app_proxy, connection.clone(), config, 0).await;
+                            return build_atspi_tree(&app_proxy, connection.clone(), config, 0)
+                                .await;
                         }
                     }
                 }
             }
         }
-        
+
         Err(AutomationError::ElementNotFound(format!(
             "No application found with pid={} title={:?}",
-            pid,
-            title
+            pid, title
         )))
     }
 }
@@ -1747,11 +1823,7 @@ impl AccessibilityEngine for LinuxEngine {
         let windows = self.list_windows_best_effort()?;
         for w in windows {
             let title_lc = w.title.to_lowercase();
-            let proc_lc = w
-                .process_name
-                .clone()
-                .unwrap_or_default()
-                .to_lowercase();
+            let proc_lc = w.process_name.clone().unwrap_or_default().to_lowercase();
             if title_lc.contains(&needle) || proc_lc.contains(&needle) {
                 return Ok(UIElement::new(Box::new(LinuxUIElement::new_window(w))));
             }
@@ -1782,20 +1854,22 @@ impl AccessibilityEngine for LinuxEngine {
                 "No GUI session detected (AT-SPI2 requires DISPLAY/WAYLAND_DISPLAY)".to_string(),
             ));
         }
-        
+
         let selector = selector.clone();
         let timeout = timeout.unwrap_or(Duration::from_secs(5));
-        
+
         // Use blocking task to run async AT-SPI2 code
         let result = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to create runtime: {e}")))?;
-            
+                .map_err(|e| {
+                    AutomationError::PlatformError(format!("Failed to create runtime: {e}"))
+                })?;
+
             rt.block_on(async move {
                 let start = std::time::Instant::now();
-                
+
                 while start.elapsed() < timeout {
                     match Self::find_element_atspi(&selector).await {
                         Ok(el) => return Ok(el),
@@ -1805,7 +1879,7 @@ impl AccessibilityEngine for LinuxEngine {
                         Err(e) => return Err(e),
                     }
                 }
-                
+
                 Err(AutomationError::Timeout(format!(
                     "Timed out waiting for element matching selector: {:?}",
                     selector
@@ -1814,7 +1888,7 @@ impl AccessibilityEngine for LinuxEngine {
         })
         .join()
         .map_err(|_| AutomationError::PlatformError("AT-SPI2 thread panicked".to_string()))??;
-        
+
         Ok(result)
     }
 
@@ -1830,21 +1904,23 @@ impl AccessibilityEngine for LinuxEngine {
                 "No GUI session detected (AT-SPI2 requires DISPLAY/WAYLAND_DISPLAY)".to_string(),
             ));
         }
-        
+
         let selector = selector.clone();
         let max_depth = depth.unwrap_or(10);
-        
+
         let result = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to create runtime: {e}")))?;
-            
+                .map_err(|e| {
+                    AutomationError::PlatformError(format!("Failed to create runtime: {e}"))
+                })?;
+
             rt.block_on(Self::find_elements_atspi(&selector, max_depth))
         })
         .join()
         .map_err(|_| AutomationError::PlatformError("AT-SPI2 thread panicked".to_string()))??;
-        
+
         Ok(result)
     }
 
@@ -1863,7 +1939,9 @@ impl AccessibilityEngine for LinuxEngine {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to run '{_app_name}': {e}")))?;
+            .map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to run '{_app_name}': {e}"))
+            })?;
 
         if !status.success() {
             // Still allow the app to be already running; fall through to lookup.
@@ -1897,7 +1975,9 @@ impl AccessibilityEngine for LinuxEngine {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to run wmctrl: {e}")))?;
+                .map_err(|e| {
+                    AutomationError::PlatformError(format!("Failed to run wmctrl: {e}"))
+                })?;
             if status.success() {
                 return Ok(());
             }
@@ -1916,7 +1996,9 @@ impl AccessibilityEngine for LinuxEngine {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to spawn 'xdg-open': {e}")))?;
+            .map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to spawn 'xdg-open': {e}"))
+            })?;
 
         if !status.success() {
             return Err(AutomationError::PlatformError(
@@ -1936,7 +2018,9 @@ impl AccessibilityEngine for LinuxEngine {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to spawn 'xdg-open': {e}")))?;
+            .map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to spawn 'xdg-open': {e}"))
+            })?;
 
         if !status.success() {
             return Err(AutomationError::PlatformError(
@@ -1946,7 +2030,12 @@ impl AccessibilityEngine for LinuxEngine {
         Ok(())
     }
 
-    fn click_at_coordinates(&self, x: f64, y: f64, _restore_cursor: bool) -> Result<(), AutomationError> {
+    fn click_at_coordinates(
+        &self,
+        x: f64,
+        y: f64,
+        _restore_cursor: bool,
+    ) -> Result<(), AutomationError> {
         self.click_at_coordinates_with_type(x, y, crate::ClickType::Left, false)
     }
 
@@ -1971,9 +2060,9 @@ impl AccessibilityEngine for LinuxEngine {
             .button(button, Direction::Click)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to click: {e}")))?;
         if click_type == crate::ClickType::Double {
-            enigo
-                .button(button, Direction::Click)
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to double click: {e}")))?;
+            enigo.button(button, Direction::Click).map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to double click: {e}"))
+            })?;
         }
         Ok(())
     }
@@ -2161,7 +2250,9 @@ impl AccessibilityEngine for LinuxEngine {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to run wmctrl: {e}")))?;
+                .map_err(|e| {
+                    AutomationError::PlatformError(format!("Failed to run wmctrl: {e}"))
+                })?;
             if status.success() {
                 return Ok(());
             }
@@ -2214,7 +2305,11 @@ impl AccessibilityEngine for LinuxEngine {
         enigo.key(Key::Control, Direction::Press).map_err(|e| {
             AutomationError::PlatformError(format!("Failed to hold Ctrl for zoom: {e}"))
         })?;
-        let key = if steps > 0 { Key::Unicode('+') } else { Key::Unicode('-') };
+        let key = if steps > 0 {
+            Key::Unicode('+')
+        } else {
+            Key::Unicode('-')
+        };
         for _ in 0..steps.unsigned_abs() {
             enigo.key(key.clone(), Direction::Click).map_err(|e| {
                 AutomationError::PlatformError(format!("Failed to adjust zoom: {e}"))
@@ -2235,20 +2330,26 @@ impl AccessibilityEngine for LinuxEngine {
                 "No GUI session detected (AT-SPI2 requires DISPLAY/WAYLAND_DISPLAY)".to_string(),
             ));
         }
-        
+
         let title_owned = title.map(|s| s.to_string());
-        
+
         let result = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to create runtime: {e}")))?;
-            
-            rt.block_on(Self::build_window_tree_atspi(pid, title_owned.as_deref(), &config))
+                .map_err(|e| {
+                    AutomationError::PlatformError(format!("Failed to create runtime: {e}"))
+                })?;
+
+            rt.block_on(Self::build_window_tree_atspi(
+                pid,
+                title_owned.as_deref(),
+                &config,
+            ))
         })
         .join()
         .map_err(|_| AutomationError::PlatformError("AT-SPI2 thread panicked".to_string()))??;
-        
+
         Ok(result)
     }
 
@@ -2262,48 +2363,58 @@ impl AccessibilityEngine for LinuxEngine {
                 "No GUI session detected (AT-SPI2 requires DISPLAY/WAYLAND_DISPLAY)".to_string(),
             ));
         }
-        
+
         // For AT-SPI2 elements, we can build the tree from that element
         // For other elements (LinuxUIElement), fall back to the window-based approach
         let el_any = element.as_any();
-        
+
         if let Some(atspi_el) = el_any.downcast_ref::<LinuxATSPIElement>() {
             let bus_name = atspi_el.info.bus_name.clone();
             let path = atspi_el.info.path.clone();
-            
+
             let result = std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(|e| AutomationError::PlatformError(format!("Failed to create runtime: {e}")))?;
-                
+                    .map_err(|e| {
+                        AutomationError::PlatformError(format!("Failed to create runtime: {e}"))
+                    })?;
+
                 rt.block_on(async {
                     let connection = Self::connect_atspi().await?;
-                    
+
                     let proxy = AccessibleProxy::builder(&*connection)
                         .destination(bus_name.as_str())
-                        .map_err(|e| AutomationError::PlatformError(format!("Failed to set destination: {e}")))?
+                        .map_err(|e| {
+                            AutomationError::PlatformError(format!(
+                                "Failed to set destination: {e}"
+                            ))
+                        })?
                         .path(path.as_str())
-                        .map_err(|e| AutomationError::PlatformError(format!("Failed to set path: {e}")))?
+                        .map_err(|e| {
+                            AutomationError::PlatformError(format!("Failed to set path: {e}"))
+                        })?
                         .build()
                         .await
-                        .map_err(|e| AutomationError::PlatformError(format!("Failed to build proxy: {e}")))?;
-                    
+                        .map_err(|e| {
+                            AutomationError::PlatformError(format!("Failed to build proxy: {e}"))
+                        })?;
+
                     build_atspi_tree(&proxy, connection.clone(), &config, 0).await
                 })
             })
             .join()
             .map_err(|_| AutomationError::PlatformError("AT-SPI2 thread panicked".to_string()))??;
-            
+
             return Ok(result);
         }
-        
+
         // For LinuxUIElement (window-level), use PID-based tree building
         if let Ok(pid) = element.process_id() {
             let name = element.attributes().name.clone();
             return self.get_window_tree(pid, name.as_deref(), config);
         }
-        
+
         Err(AutomationError::UnsupportedOperation(
             "Cannot build tree from this element type".to_string(),
         ))

@@ -1,5 +1,5 @@
-use std::{sync::Arc, time::Duration};
 use computeruse::UIElement;
+use std::{sync::Arc, time::Duration};
 
 // Ensures any opened UIElement (app/window) is closed when going out of scope
 struct CloseOnDrop<'a>(&'a UIElement);

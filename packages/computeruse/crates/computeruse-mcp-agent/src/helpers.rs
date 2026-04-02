@@ -2,12 +2,12 @@ use crate::expression_eval;
 use crate::mcp_types::TreeOutputFormat;
 use crate::tree_formatter::{format_tree_as_compact_yaml, format_ui_node_as_compact_yaml};
 use crate::utils::ToolCall;
+use computeruse::{AutomationError, Desktop, Selector, UIElement};
 use regex::Regex;
 use rmcp::ErrorData as McpError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
-use computeruse::{AutomationError, Desktop, Selector, UIElement};
 
 /// Normalize key format to ensure curly brace syntax for special keys.
 /// If key already contains `{`, assume it's correctly formatted.

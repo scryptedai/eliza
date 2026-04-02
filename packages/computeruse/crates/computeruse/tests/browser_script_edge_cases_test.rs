@@ -1,3 +1,4 @@
+use computeruse::{Browser, Desktop};
 /// Comprehensive edge case tests for browser script execution
 ///
 /// These tests verify that browser script execution handles various edge cases correctly:
@@ -10,7 +11,6 @@
 /// - Empty/null/undefined returns
 /// - Large data returns
 use std::time::Duration;
-use computeruse::{Browser, Desktop};
 #[tokio::test]
 #[ignore] // Extension client connection timeout in CI
 async fn test_browser_script_basic_types() {

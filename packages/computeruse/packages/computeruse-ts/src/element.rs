@@ -1,9 +1,9 @@
-use napi::bindgen_prelude::FromNapiValue;
-use napi::{self};
-use napi_derive::napi;
 use computeruse::{
     UIElement as ComputerUseUIElement, UIElementAttributes as ComputerUseUIElementAttributes,
 };
+use napi::bindgen_prelude::FromNapiValue;
+use napi::{self};
+use napi_derive::napi;
 
 use crate::{
     map_error, ActionResult, Bounds, ClickResult, ClickType, FontStyle, HighlightHandle, Locator,

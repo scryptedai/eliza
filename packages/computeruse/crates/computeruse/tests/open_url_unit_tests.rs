@@ -1,9 +1,9 @@
-use std::sync::LazyLock;
-use std::time::Duration;
 use computeruse::platforms::AccessibilityEngine;
 use computeruse::Browser;
 use computeruse::UIElement;
 use computeruse::{platforms, AutomationError};
+use std::sync::LazyLock;
+use std::time::Duration;
 use tracing::{info, Level};
 
 /// Test helper to setup logging for debugging

@@ -62,7 +62,9 @@ pub use platforms::{OverlayDisplayMode, PropertyLoadingMode, TreeBuildConfig};
 
 // Re-export window manager + overlay helpers.
 // On non-Windows these are stubs to keep downstream crates compiling.
-pub use platforms::windows::window_manager::{WindowCache, WindowInfo, WindowManager, WindowPlacement};
+pub use platforms::windows::window_manager::{
+    WindowCache, WindowInfo, WindowManager, WindowPlacement,
+};
 pub use platforms::windows::{
     hide_action_overlay, hide_inspect_overlay, highlight_bounds, is_action_overlay_enabled,
     set_action_overlay_enabled, show_action_overlay, show_inspect_overlay, stop_all_highlights,

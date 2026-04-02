@@ -15,6 +15,8 @@ use crate::utils::{
     SelectOptionArgs, SetSelectedArgs, SetValueArgs, StopHighlightingArgs, TypeIntoElementArgs,
     ValidateElementArgs, WaitForElementArgs, WriteFileArgs,
 };
+use computeruse::element::UIElementImpl;
+use computeruse::{AutomationError, Browser, Desktop, Selector, UIElement};
 use image::imageops::FilterType;
 use image::{ExtendedColorType, ImageBuffer, ImageEncoder, Rgba};
 use regex::Regex;
@@ -33,8 +35,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use sysinfo::{ProcessesToUpdate, System};
-use computeruse::element::UIElementImpl;
-use computeruse::{AutomationError, Browser, Desktop, Selector, UIElement};
 use tokio::sync::Mutex;
 use tracing::{info, warn, Instrument};
 
@@ -820,7 +820,78 @@ impl DesktopWrapper {
             client_modes: Arc::new(Mutex::new(std::collections::HashMap::new())),
             elicitation_peer: Arc::new(Mutex::new(None)),
             broadcast_peers: Arc::new(Mutex::new(Vec::new())),
+            exec_policy: crate::exec_policy::ExecPolicy::from_env(),
+            idempotency: Arc::new(crate::idempotency::IdempotencyCache::from_env()),
         })
+    }
+
+    /// Enforce [`crate::exec_policy::ExecPolicy`] for a tool call.
+    ///
+    /// Called from both [`Self::call_tool`] (direct MCP) and [`Self::dispatch_tool`]
+    /// (sequence steps) so that `execute_sequence` cannot bypass the gate.
+    /// On `AskUser`, routes through MCP elicitation; if no elicitation-capable
+    /// peer is connected the call is denied (fail-closed).
+    async fn enforce_exec_policy(
+        &self,
+        calling_peer: &Peer<RoleServer>,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(), McpError> {
+        use crate::elicitation::{try_elicit, ExecApproval};
+        use crate::exec_policy::Decision;
+
+        let Some(decision) = self.exec_policy.evaluate(tool_name, arguments) else {
+            return Ok(()); // ungated tool
+        };
+
+        match decision {
+            Decision::Allow => Ok(()),
+            Decision::Deny { reason } => Err(McpError::invalid_request(
+                reason.clone(),
+                Some(json!({
+                    "code": -32003,
+                    "tool": tool_name,
+                    "policy_mode": format!("{:?}", self.exec_policy.mode),
+                    "reason": reason,
+                })),
+            )),
+            Decision::AskUser(req) => {
+                let prompt = format!(
+                    "computeruse wants to run a gated operation:\n\n  tool: {}\n  {}\n  cwd: {}\n\nAllow it?",
+                    req.tool,
+                    req.summary,
+                    req.cwd.as_deref().unwrap_or("(default)")
+                );
+                match try_elicit::<ExecApproval>(&self.elicitation_peer, calling_peer, &prompt)
+                    .await
+                {
+                    Some(approval) if approval.approved => {
+                        self.exec_policy.record_approval(&req, approval.remember);
+                        tracing::info!(
+                            "[exec_policy] user approved {} ({}), remember={}",
+                            req.tool,
+                            req.argv_hash,
+                            approval.remember
+                        );
+                        Ok(())
+                    }
+                    Some(_) | None => Err(McpError::invalid_request(
+                        format!(
+                            "exec policy: user did not approve '{}' ({}). \
+                             Operation blocked.",
+                            req.tool, req.summary
+                        ),
+                        Some(json!({
+                            "code": -32003,
+                            "tool": tool_name,
+                            "policy_mode": format!("{:?}", self.exec_policy.mode),
+                            "argv_hash": req.argv_hash,
+                            "action": "approve_or_allowlist",
+                        })),
+                    )),
+                }
+            }
+        }
     }
 
     /// Detect if a PID belongs to a browser process
@@ -1448,7 +1519,14 @@ impl DesktopWrapper {
                                         crate::tree_formatter::format_browser_dom_as_compact_yaml(
                                             &dom_elements,
                                         );
-                                    result_json["browser_dom"] = json!(dom_result.formatted);
+                                    // Browser DOM text is page-controlled — wrap so the
+                                    // downstream LLM treats it as untrusted data, not
+                                    // instructions (prompt-injection defense, Issue #1).
+                                    result_json["browser_dom"] =
+                                        json!(crate::exec_policy::wrap_external_content(
+                                            "browser_dom",
+                                            &dom_result.formatted,
+                                        ));
 
                                     // Store DOM bounds with screen coordinates applied
                                     if let Ok(mut cache) = self.dom_bounds.lock() {
@@ -4061,7 +4139,10 @@ DATA PASSING:
                                     // Remove dead peers (reverse order to preserve indices)
                                     for i in dead_indices.into_iter().rev() {
                                         peers.remove(i);
-                                        tracing::debug!("[broadcast] Removed dead peer at index {}", i);
+                                        tracing::debug!(
+                                            "[broadcast] Removed dead peer at index {}",
+                                            i
+                                        );
                                     }
                                 });
                             }
@@ -4070,14 +4151,16 @@ DATA PASSING:
                                 if let Some(p) = peer_clone.clone() {
                                     tokio::spawn(async move {
                                         let _ = p
-                                            .notify_logging_message(LoggingMessageNotificationParam {
-                                                level: LoggingLevel::Info,
-                                                logger: Some("run_command".to_string()),
-                                                data: json!({
-                                                    "type": "status",
-                                                    "message": text
-                                                }),
-                                            })
+                                            .notify_logging_message(
+                                                LoggingMessageNotificationParam {
+                                                    level: LoggingLevel::Info,
+                                                    logger: Some("run_command".to_string()),
+                                                    data: json!({
+                                                        "type": "status",
+                                                        "message": text
+                                                    }),
+                                                },
+                                            )
                                             .await;
                                     });
                                 }
@@ -4098,14 +4181,16 @@ DATA PASSING:
                                     };
                                     tokio::spawn(async move {
                                         let _ = p
-                                            .notify_logging_message(LoggingMessageNotificationParam {
-                                                level: log_level,
-                                                logger: Some("run_command".to_string()),
-                                                data: json!({
-                                                    "message": message,
-                                                    "data": data
-                                                }),
-                                            })
+                                            .notify_logging_message(
+                                                LoggingMessageNotificationParam {
+                                                    level: log_level,
+                                                    logger: Some("run_command".to_string()),
+                                                    data: json!({
+                                                        "message": message,
+                                                        "data": data
+                                                    }),
+                                                },
+                                            )
                                             .await;
                                     });
                                 }
@@ -4354,7 +4439,10 @@ DATA PASSING:
                                     // Remove dead peers (reverse order to preserve indices)
                                     for i in dead_indices.into_iter().rev() {
                                         peers.remove(i);
-                                        tracing::debug!("[broadcast] Removed dead peer at index {}", i);
+                                        tracing::debug!(
+                                            "[broadcast] Removed dead peer at index {}",
+                                            i
+                                        );
                                     }
                                 });
                             }
@@ -4363,14 +4451,16 @@ DATA PASSING:
                                 if let Some(p) = peer_clone.clone() {
                                     tokio::spawn(async move {
                                         let _ = p
-                                            .notify_logging_message(LoggingMessageNotificationParam {
-                                                level: LoggingLevel::Info,
-                                                logger: Some("run_command".to_string()),
-                                                data: json!({
-                                                    "type": "status",
-                                                    "message": text
-                                                }),
-                                            })
+                                            .notify_logging_message(
+                                                LoggingMessageNotificationParam {
+                                                    level: LoggingLevel::Info,
+                                                    logger: Some("run_command".to_string()),
+                                                    data: json!({
+                                                        "type": "status",
+                                                        "message": text
+                                                    }),
+                                                },
+                                            )
                                             .await;
                                     });
                                 }
@@ -4391,14 +4481,16 @@ DATA PASSING:
                                     };
                                     tokio::spawn(async move {
                                         let _ = p
-                                            .notify_logging_message(LoggingMessageNotificationParam {
-                                                level: log_level,
-                                                logger: Some("run_command".to_string()),
-                                                data: json!({
-                                                    "message": message,
-                                                    "data": data
-                                                }),
-                                            })
+                                            .notify_logging_message(
+                                                LoggingMessageNotificationParam {
+                                                    level: log_level,
+                                                    logger: Some("run_command".to_string()),
+                                                    data: json!({
+                                                        "message": message,
+                                                        "data": data
+                                                    }),
+                                                },
+                                            )
                                             .await;
                                     });
                                 }
@@ -7539,6 +7631,181 @@ DATA PASSING:
     }
 
     #[tool(
+        description = "Read the persisted checkpoint for a workflow (last successful step + saved env) so execution can be resumed. \
+Returns `resume_from_step` — pass that as `execute_sequence.start_from_step` (with the same `url`/`workflow_id`) to continue where the previous run left off. \
+Returns `has_checkpoint: false` if the workflow has never persisted state."
+    )]
+    async fn resume_sequence(
+        &self,
+        Parameters(args): Parameters<crate::utils::ResumeSequenceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::idempotency::read_checkpoint(args.workflow_id.as_deref(), args.url.as_deref())
+        {
+            Err(msg) => Err(McpError::invalid_params(msg, None)),
+            Ok(None) => Ok(CallToolResult::success(vec![Content::json(json!({
+                "action": "resume_sequence",
+                "has_checkpoint": false,
+                "workflow_id": args.workflow_id,
+                "url": args.url,
+                "hint": "no state.json found — run execute_sequence at least once (with a file:// url or workflow_id) before resuming",
+            }))?])),
+            Ok(Some(cp)) => Ok(CallToolResult::success(vec![Content::json(json!({
+                "action": "resume_sequence",
+                "has_checkpoint": true,
+                "state_file": cp.state_file,
+                "last_step_id": cp.last_step_id,
+                "last_step_index": cp.last_step_index,
+                "last_updated": cp.last_updated,
+                "resume_from_step": cp.resume_from_step,
+                "env": cp.env,
+                "hint": "call execute_sequence with start_from_step = resume_from_step to continue",
+            }))?])),
+        }
+    }
+
+    #[tool(
+        description = "Health-check the underlying UI-automation stack on this host. \
+Returns whether the accessibility API is reachable, whether the desktop can be queried, \
+and whether UI elements can be enumerated, plus platform-specific diagnostics \
+(e.g. macOS Accessibility permission, Linux AT-SPI bus, Windows UIAutomation COM). \
+Call this first when automation tools fail with permission or 'element not found' errors — \
+the `error_message` and `diagnostics.remediation` fields explain how to fix the host."
+    )]
+    async fn get_health(
+        &self,
+        Parameters(_args): Parameters<crate::utils::EmptyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let report = computeruse::health::check_automation_health().await;
+        let status_ok = matches!(report.status, computeruse::health::HealthStatus::Healthy);
+        let payload = json!({
+            "action": "get_health",
+            "status": match report.status {
+                computeruse::health::HealthStatus::Healthy => "healthy",
+                computeruse::health::HealthStatus::Degraded => "degraded",
+                computeruse::health::HealthStatus::Unhealthy => "unhealthy",
+            },
+            "platform": report.platform,
+            "api_available": report.api_available,
+            "desktop_accessible": report.desktop_accessible,
+            "can_enumerate_elements": report.can_enumerate_elements,
+            "check_duration_ms": report.check_duration_ms,
+            "error_message": report.error_message,
+            "diagnostics": report.diagnostics,
+        });
+        let content = vec![Content::json(payload)?];
+        Ok(if status_ok {
+            CallToolResult::success(content)
+        } else {
+            // Degraded/unhealthy is reported as a tool error so callers
+            // (and LLMs) treat it as actionable rather than silently ok.
+            CallToolResult::error(content)
+        })
+    }
+
+    #[tool(
+        description = "Render content onto the agent's local 'canvas' — a localhost browser page \
+the agent owns. Use this to show the user generated HTML, an external URL, or an image \
+without taking over an existing application window. Provide exactly one of `html`, `url`, \
+or `image_path`. Returns the canvas URL (open it in a browser if not already visible)."
+    )]
+    async fn canvas_present(
+        &self,
+        Parameters(args): Parameters<crate::utils::CanvasPresentArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let first_time = crate::canvas::CanvasServer::get().is_none();
+        let canvas = crate::canvas::CanvasServer::ensure_running()
+            .await
+            .map_err(|e| McpError::internal_error(format!("canvas start failed: {e}"), None))?;
+
+        let (kind, version) = if let Some(html) = args.html {
+            ("html", canvas.present_html(html).await)
+        } else if let Some(url) = args.url {
+            ("url", canvas.present_url(url).await)
+        } else if let Some(path) = args.image_path {
+            let bytes = tokio::fs::read(&path).await.map_err(|e| {
+                McpError::invalid_params(format!("cannot read image_path '{path}': {e}"), None)
+            })?;
+            let mime = match std::path::Path::new(&path)
+                .extension()
+                .and_then(|s| s.to_str())
+            {
+                Some("jpg") | Some("jpeg") => "image/jpeg",
+                _ => "image/png",
+            };
+            ("image", canvas.present_image(&bytes, mime).await)
+        } else {
+            return Err(McpError::invalid_params(
+                "canvas_present requires one of: html, url, image_path",
+                None,
+            ));
+        };
+
+        // Open the browser on first present (or when explicitly asked).
+        // Failure to launch is non-fatal: the URL is returned either way
+        // so the caller/user can open it manually.
+        let want_open = args.open_browser.unwrap_or(first_time);
+        let mut browser_error: Option<String> = None;
+        if want_open {
+            if let Err(e) = self.desktop.open_url(&canvas.url(), None) {
+                browser_error = Some(e.to_string());
+                tracing::warn!("[canvas] failed to auto-open browser: {e}");
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::json(json!({
+            "action": "canvas_present",
+            "kind": kind,
+            "version": version,
+            "canvas_url": canvas.url(),
+            "opened_browser": want_open && browser_error.is_none(),
+            "browser_error": browser_error,
+        }))?]))
+    }
+
+    #[tool(
+        description = "Clear the agent canvas (the localhost page shows an idle placeholder). \
+Does not close the browser tab."
+    )]
+    async fn canvas_hide(
+        &self,
+        Parameters(_args): Parameters<crate::utils::EmptyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let payload = match crate::canvas::CanvasServer::get() {
+            None => json!({ "action": "canvas_hide", "running": false }),
+            Some(c) => {
+                let v = c.hide().await;
+                json!({ "action": "canvas_hide", "running": true, "version": v,
+                        "canvas_url": c.url() })
+            }
+        };
+        Ok(CallToolResult::success(vec![Content::json(payload)?]))
+    }
+
+    #[tool(
+        description = "Return what the agent canvas is currently showing (kind + content) and \
+its URL/version. Useful for verifying a `canvas_present` landed."
+    )]
+    async fn canvas_snapshot(
+        &self,
+        Parameters(_args): Parameters<crate::utils::EmptyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let payload = match crate::canvas::CanvasServer::get() {
+            None => json!({ "action": "canvas_snapshot", "running": false }),
+            Some(c) => {
+                let (version, content) = c.snapshot().await;
+                json!({
+                    "action": "canvas_snapshot",
+                    "running": true,
+                    "canvas_url": c.url(),
+                    "version": version,
+                    "content": content,
+                })
+            }
+        };
+        Ok(CallToolResult::success(vec![Content::json(payload)?]))
+    }
+
+    #[tool(
         description = "Sets the text value of an editable control (e.g., an input field) directly using the underlying accessibility API. This action requires the application to be focused and may change the UI."
     )]
     async fn set_value(
@@ -8502,6 +8769,20 @@ console.info = function(...args) {
         } else {
             // No wrapping, use script_result as-is
             (json!(script_result), None)
+        };
+
+        // The script return value is page-controlled content. If it's a string,
+        // wrap it so the downstream LLM treats it as untrusted data rather than
+        // instructions (prompt-injection defense, Issue #1). Structured (non-string)
+        // results are left untouched so callers can still pattern-match on them.
+        let actual_result = match actual_result {
+            serde_json::Value::String(s) => {
+                json!(crate::exec_policy::wrap_external_content(
+                    "execute_browser_script",
+                    &s,
+                ))
+            }
+            other => other,
         };
 
         let mut result_json = json!({
@@ -9785,6 +10066,12 @@ impl DesktopWrapper {
             ));
         }
 
+        // Execution-safety policy gate — also enforced here so that
+        // `execute_sequence` steps cannot bypass the policy applied in
+        // `call_tool`. See [`crate::exec_policy`].
+        self.enforce_exec_policy(&peer, tool_name, arguments)
+            .await?;
+
         // Window management for UI interaction tools
         // Check if tool has a 'process' argument - if so, it needs window management
         // No whitelist - any tool with a process argument gets window management
@@ -10515,6 +10802,23 @@ impl ServerHandler for DesktopWrapper {
             // If no mode is set for this client (e.g., "mediar-app"), allow all tools
         }
 
+        // Execution-safety policy gate (Issue #1: OpenClaw exec-approvals parity).
+        // Applies to run_command / execute_browser_script / write_file / edit_file /
+        // open_application. Returns an MCP error if denied or not approved.
+        self.enforce_exec_policy(&context.peer, &tool_name, &arguments)
+            .await?;
+
+        // Idempotency (Issue #2): if the caller supplied `idempotency_key` and
+        // we've already successfully run this exact (tool, key) within TTL,
+        // return the cached result without re-executing. Side-effecting tools
+        // (clicks, run_command, write_file, …) become retry-safe.
+        let idem_key = crate::idempotency::IdempotencyCache::extract_key(&arguments);
+        if let Some(key) = &idem_key {
+            if let Some(cached) = self.idempotency.get(&tool_name, key) {
+                return Ok(cached);
+            }
+        }
+
         // Reset cancellation state before starting a new tool call (except for stop_execution itself)
         // This clears any previous stop_execution() so new operations can run
         if tool_name != "stop_execution" {
@@ -10624,6 +10928,15 @@ impl ServerHandler for DesktopWrapper {
                         logs_option,
                     );
                 }
+            }
+        }
+
+        // Idempotency (Issue #2): cache successful, non-error results so a
+        // retry with the same key short-circuits above. Errors are *not*
+        // cached — the caller is expected to retry those.
+        if let (Some(key), Ok(call_result)) = (&idem_key, &result) {
+            if call_result.is_error != Some(true) {
+                self.idempotency.put(&tool_name, key, call_result);
             }
         }
 

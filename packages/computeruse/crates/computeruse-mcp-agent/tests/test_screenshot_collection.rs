@@ -6,9 +6,9 @@
 
 #![allow(clippy::type_complexity)]
 
+use computeruse_mcp_agent::event_pipe::{create_event_channel, WorkflowEvent};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use computeruse_mcp_agent::event_pipe::{create_event_channel, WorkflowEvent};
 
 /// Test that screenshot events are collected with proper metadata
 #[tokio::test]

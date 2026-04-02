@@ -1,5 +1,5 @@
-use std::env;
 use computeruse::{AutomationError, Desktop};
+use std::env;
 use tracing::info;
 
 #[cfg(not(target_os = "windows"))]

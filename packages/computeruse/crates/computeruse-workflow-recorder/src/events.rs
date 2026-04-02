@@ -1,8 +1,8 @@
+use computeruse::UIElement;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::SystemTime;
-use computeruse::UIElement;
 
 // Precomputed set of null-like values for efficient O(1) lookups
 static NULL_LIKE_VALUES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {

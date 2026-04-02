@@ -151,6 +151,12 @@ struct McpRunArgs {
     #[clap(long)]
     start_from_step: Option<String>,
 
+    /// Resume from the last persisted checkpoint (state.json) for this
+    /// workflow. Equivalent to passing `--start-from-step <last_step_id>`;
+    /// ignored if `--start-from-step` is also given.
+    #[clap(long)]
+    resume: bool,
+
     /// End execution at a specific step ID (inclusive)
     #[clap(long)]
     end_at_step: Option<String>,
@@ -1369,6 +1375,37 @@ async fn run_workflow(transport: mcp_client::Transport, args: McpRunArgs) -> any
     // By default, log output to file unless --no-log is specified
     if !args.no_log {
         return run_logged_workflow(args).await;
+    }
+
+    // --resume: read the persisted checkpoint for this workflow and translate
+    // it into --start-from-step. An explicit --start-from-step always wins.
+    let mut args = args;
+    if args.resume && args.start_from_step.is_none() {
+        let abs = std::fs::canonicalize(&args.input)
+            .map(|p| format!("file://{}", p.display()))
+            .unwrap_or_else(|_| args.input.clone());
+        match computeruse_mcp_agent::idempotency::read_checkpoint(None, Some(&abs)) {
+            Ok(Some(cp)) => {
+                eprintln!(
+                    "↻ resuming from checkpoint: step '{}' (index {}, saved {})",
+                    cp.resume_from_step.as_deref().unwrap_or("?"),
+                    cp.last_step_index.map(|i| i as i64).unwrap_or(-1),
+                    cp.last_updated.as_deref().unwrap_or("unknown"),
+                );
+                args.start_from_step = cp.resume_from_step;
+            }
+            Ok(None) => {
+                eprintln!(
+                    "↻ --resume: no checkpoint found for '{}', starting from the beginning",
+                    args.input
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "↻ --resume: failed to read checkpoint ({e}), starting from the beginning"
+                );
+            }
+        }
     }
 
     if args.verbose {

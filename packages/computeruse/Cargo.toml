@@ -62,6 +62,13 @@ dirs = "5.0"
 
 regex = "1.10.5"
 
+# Patch cidre to use a cc-based build.rs (backported from 0.15.0) instead of
+# invoking `xcodebuild`, so the workspace builds on macOS hosts that only have
+# Command Line Tools (no full Xcode). uni-ocr 0.1.5 pins cidre ^0.9.0, so we
+# vendor 0.9.2 with only build.rs + [build-dependencies] changed.
+[patch.crates-io]
+cidre = { path = "vendor/cidre" }
+
 [profile.release]
 # Enables full cross-crate optimisations, producing the smallest and fastest binary.
 lto = "fat"

@@ -4,9 +4,9 @@
 //! - Chrome browser installed
 //! - ComputerUse browser extension installed and enabled
 
-use std::time::Duration;
 use computeruse::extension_bridge::ExtensionBridge;
 use computeruse::{Browser, Desktop};
+use std::time::Duration;
 use tracing::info;
 
 /// Test closing a tab by URL

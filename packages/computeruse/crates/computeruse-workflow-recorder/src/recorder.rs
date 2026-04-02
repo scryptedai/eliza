@@ -12,10 +12,16 @@ use tracing::info;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 pub mod browser_context;
 
 #[cfg(target_os = "windows")]
 pub use self::windows::*;
+
+#[cfg(target_os = "macos")]
+pub use self::macos::MacOSRecorder;
 
 /// Performance mode for the workflow recorder
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -296,6 +302,10 @@ pub struct WorkflowRecorder {
     #[cfg(target_os = "windows")]
     windows_recorder: Option<WindowsRecorder>,
 
+    /// The platform-specific recorder
+    #[cfg(target_os = "macos")]
+    macos_recorder: Option<MacOSRecorder>,
+
     /// Active highlight handles (FIFO queue for cleanup)
     highlight_handles: Arc<tokio::sync::Mutex<VecDeque<computeruse::HighlightHandle>>>,
 
@@ -315,6 +325,8 @@ impl WorkflowRecorder {
             config,
             #[cfg(target_os = "windows")]
             windows_recorder: None,
+            #[cfg(target_os = "macos")]
+            macos_recorder: None,
             highlight_handles: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
             highlight_task_handle: None,
         }
@@ -451,10 +463,26 @@ impl WorkflowRecorder {
             Ok(())
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            let workflow = Arc::clone(&self.workflow);
+            let event_tx = self.event_tx.clone();
+
+            let macos_recorder = MacOSRecorder::new(self.config.clone(), event_tx)?;
+            self.macos_recorder = Some(macos_recorder);
+
+            let event_rx = self.event_tx.subscribe();
+            tokio::spawn(async move {
+                Self::process_events(workflow, event_rx).await;
+            });
+
+            Ok(())
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             Err(WorkflowRecorderError::InitializationError(
-                "Workflow recording is only supported on Windows".to_string(),
+                "Workflow recording is only supported on Windows and macOS".to_string(),
             ))
         }
     }
@@ -471,6 +499,14 @@ impl WorkflowRecorder {
 
                 // Additional delay to ensure all event processing is fully stopped
                 // before we proceed with workflow processing
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(macos_recorder) = self.macos_recorder.take() {
+                macos_recorder.stop()?;
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
         }

@@ -1,5 +1,5 @@
-use std::time::Duration;
 use computeruse::{platforms, AutomationError, Selector};
+use std::time::Duration;
 use tracing::{info, Level};
 
 #[tokio::test]

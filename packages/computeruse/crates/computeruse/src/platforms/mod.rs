@@ -440,7 +440,11 @@ pub mod windows {
 
     pub fn show_action_overlay(_message: impl Into<String>, _sub_message: Option<String>) {}
 
-    pub fn update_action_overlay_message(_message: impl Into<String>, _sub_message: Option<String>) {}
+    pub fn update_action_overlay_message(
+        _message: impl Into<String>,
+        _sub_message: Option<String>,
+    ) {
+    }
 
     pub fn hide_action_overlay() {}
 
@@ -489,7 +493,10 @@ pub mod windows {
                 Vec::new()
             }
 
-            pub async fn get_topmost_window_for_process(&self, _process: &str) -> Option<WindowInfo> {
+            pub async fn get_topmost_window_for_process(
+                &self,
+                _process: &str,
+            ) -> Option<WindowInfo> {
                 None
             }
 
@@ -497,7 +504,10 @@ pub mod windows {
                 None
             }
 
-            pub async fn minimize_always_on_top_windows(&self, _target_hwnd: isize) -> Result<u32, String> {
+            pub async fn minimize_always_on_top_windows(
+                &self,
+                _target_hwnd: isize,
+            ) -> Result<u32, String> {
                 Ok(0)
             }
 

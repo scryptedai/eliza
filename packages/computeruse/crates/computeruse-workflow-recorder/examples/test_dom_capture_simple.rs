@@ -1,8 +1,8 @@
 // Simple test for browser DOM capture using execute_browser_script directly
 // Run with: cargo run --release --example test_dom_capture_simple
 
-use std::time::Duration;
 use computeruse::Desktop;
+use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🧪 Testing Browser DOM Capture Script (getCSSPath & getXPath)");

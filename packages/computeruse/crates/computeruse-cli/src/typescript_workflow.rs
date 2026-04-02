@@ -42,7 +42,10 @@ pub fn is_typescript_workflow(input: &str, is_file_input: bool) -> bool {
         debug!("Checking directory for TypeScript workflow files:");
         debug!("  package.json exists: {}", package_json.exists());
         debug!("  computeruse.ts exists: {}", computeruse_ts.exists());
-        debug!("  src/computeruse.ts exists: {}", src_computeruse_ts.exists());
+        debug!(
+            "  src/computeruse.ts exists: {}",
+            src_computeruse_ts.exists()
+        );
         debug!("  workflow.ts exists: {}", workflow_ts.exists());
         debug!("  index.ts exists: {}", index_ts.exists());
 

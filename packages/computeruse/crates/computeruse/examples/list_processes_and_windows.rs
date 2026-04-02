@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use computeruse::{AutomationError, Desktop};
+use std::collections::HashMap;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 

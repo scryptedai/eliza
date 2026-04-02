@@ -92,6 +92,19 @@
         "typescript": "^5.3.3",
       },
     },
+    "packages/computeruse/packages/plugin-computeruse": {
+      "name": "@elizaos/plugin-computeruse",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elizaos/computeruse": "workspace:*",
+        "@elizaos/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^25.0.3",
+        "typescript": "^5.9.3",
+        "vitest": "^4.0.0",
+      },
+    },
     "packages/computeruse/packages/workflow": {
       "name": "@mediar-ai/workflow",
       "version": "0.24.20",
@@ -535,6 +548,8 @@
     "@elizaos/interop": ["@elizaos/interop@workspace:packages/interop"],
 
     "@elizaos/plugin-avb": ["@elizaos/plugin-avb@workspace:plugins/plugin-avb"],
+
+    "@elizaos/plugin-computeruse": ["@elizaos/plugin-computeruse@workspace:packages/computeruse/packages/plugin-computeruse"],
 
     "@elizaos/plugin-scryptedai": ["@elizaos/plugin-scryptedai@workspace:plugins/plugin-scryptedai"],
 

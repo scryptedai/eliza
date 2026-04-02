@@ -1,5 +1,5 @@
-use serde_json::json;
 use computeruse_mcp_agent::expression_eval::evaluate;
+use serde_json::json;
 
 #[test]
 fn test_evaluate_binary_expressions() {

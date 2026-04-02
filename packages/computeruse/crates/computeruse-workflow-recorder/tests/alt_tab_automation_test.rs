@@ -1,8 +1,8 @@
-use std::time::Duration;
 use computeruse::Desktop;
 use computeruse_workflow_recorder::{
     ApplicationSwitchMethod, HotkeyEvent, WorkflowEvent, WorkflowRecorder, WorkflowRecorderConfig,
 };
+use std::time::Duration;
 use tokio_stream::{Stream, StreamExt};
 
 /// Helper function to expect a specific event within a timeout

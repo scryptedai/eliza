@@ -43,6 +43,10 @@ criterion = "0.5"                                           # For benchmarking
 sysinfo = { workspace = true }                              # For CPU monitoring
 rand = "0.8"                                                # For random element selection in benchmarks
 
+# macOS-specific dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+accessibility-sys = "0.2"
+
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
 sysinfo = { workspace = true }

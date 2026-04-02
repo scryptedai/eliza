@@ -10,6 +10,10 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
+use computeruse_mcp_agent::cancellation::RequestManager;
+use computeruse_mcp_agent::child_process;
+use computeruse_mcp_agent::server::{self, check_computeruse_source};
+use computeruse_mcp_agent::utils::init_logging;
 use rmcp::{
     transport::sse_server::SseServer,
     transport::stdio,
@@ -27,10 +31,6 @@ use std::{
     time::SystemTime,
 };
 use sysinfo::{ProcessesToUpdate, System};
-use computeruse_mcp_agent::cancellation::RequestManager;
-use computeruse_mcp_agent::child_process;
-use computeruse_mcp_agent::server::{self, check_computeruse_source};
-use computeruse_mcp_agent::utils::init_logging;
 use tower_http::cors::CorsLayer;
 use tracing::{debug, error, info};
 use uuid::Uuid;

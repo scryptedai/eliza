@@ -6,11 +6,11 @@ use crate::Selector;
 use crate::{
     map_error, CommandOutput, Element, Locator, ScreenshotResult, TreeBuildConfig, UINode,
 };
+use computeruse::Desktop as ComputerUseDesktop;
 use napi::bindgen_prelude::Either;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 use std::sync::{Arc, Once};
-use computeruse::Desktop as ComputerUseDesktop;
 
 /// Normalize key format to ensure curly brace syntax for special keys.
 /// If key already contains `{`, assume it's correctly formatted.
@@ -1933,7 +1933,8 @@ impl Desktop {
             .inner
             .get_window_tree_result(pid, None, None)
             .map_err(map_error)?;
-        let formatted_result = computeruse::format_ui_node_as_compact_yaml(&uia_tree_result.tree, 0);
+        let formatted_result =
+            computeruse::format_ui_node_as_compact_yaml(&uia_tree_result.tree, 0);
         for (idx, (role, name, bounds, selector)) in formatted_result.index_to_bounds {
             uia_bounds.insert(idx, (role, name, bounds, selector));
         }

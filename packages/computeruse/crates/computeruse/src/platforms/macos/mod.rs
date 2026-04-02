@@ -1,11 +1,11 @@
 use crate::element::{UIElementAttributes, UIElementImpl};
+use crate::platforms::tree_search::{ElementFinderWithWindows, ElementsCollectorWithWindows};
 use crate::platforms::{AccessibilityEngine, TreeBuildConfig};
 use crate::{AutomationError, Browser, CommandOutput, Selector, UIElement, UINode};
-use crate::platforms::tree_search::{ElementFinderWithWindows, ElementsCollectorWithWindows};
 use accessibility::{AXAttribute, AXUIElement, AXUIElementAttributes, Error as AxError};
 use accessibility_sys::{
-    kAXPositionAttribute, kAXSizeAttribute, AXUIElementCopyAttributeValue, AXValueGetType,
-    AXValueGetValue, AXValueRef, kAXValueTypeCGPoint, kAXValueTypeCGSize,
+    kAXPositionAttribute, kAXSizeAttribute, kAXValueTypeCGPoint, kAXValueTypeCGSize,
+    AXUIElementCopyAttributeValue, AXValueGetType, AXValueGetValue, AXValueRef,
 };
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType};
@@ -21,9 +21,9 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use enigo::Axis;
 #[cfg(not(target_os = "windows"))]
 use enigo::{Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use enigo::Axis;
 
 static NEXT_OBJECT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -111,7 +111,13 @@ impl fmt::Debug for MacOSUIElement {
 }
 
 impl MacOSUIElement {
-    fn new(role: &str, name: Option<String>, pid: u32, bounds: Option<(f64, f64, f64, f64)>, window_id: Option<u32>) -> Self {
+    fn new(
+        role: &str,
+        name: Option<String>,
+        pid: u32,
+        bounds: Option<(f64, f64, f64, f64)>,
+        window_id: Option<u32>,
+    ) -> Self {
         let object_id = NEXT_OBJECT_ID.fetch_add(1, Ordering::Relaxed);
         let mut attrs = UIElementAttributes::default();
         attrs.role = role.to_string();
@@ -182,13 +188,10 @@ impl MacOSAXElement {
 
     fn value_str(&self) -> Option<String> {
         // Value is CFType in the accessibility crate; we can fall back to empty for now.
-        self.ax
-            .value()
-            .ok()
-            .and_then(|v| {
-                // Try CFString downcast via CFType.
-                v.downcast::<CFString>().map(|s| s.to_string())
-            })
+        self.ax.value().ok().and_then(|v| {
+            // Try CFString downcast via CFType.
+            v.downcast::<CFString>().map(|s| s.to_string())
+        })
     }
 
     fn bounds_from_axvalue(&self) -> Option<(f64, f64, f64, f64)> {
@@ -221,14 +224,24 @@ impl MacOSAXElement {
 
             let pos_ref = pos_val as AXValueRef;
             let size_ref = size_val as AXValueRef;
-            if AXValueGetType(pos_ref) != kAXValueTypeCGPoint || AXValueGetType(size_ref) != kAXValueTypeCGSize {
+            if AXValueGetType(pos_ref) != kAXValueTypeCGPoint
+                || AXValueGetType(size_ref) != kAXValueTypeCGSize
+            {
                 return None;
             }
 
             let mut pos = CGPoint::default();
             let mut size = CGSize::default();
-            let ok_pos = AXValueGetValue(pos_ref, kAXValueTypeCGPoint, (&mut pos as *mut CGPoint).cast());
-            let ok_size = AXValueGetValue(size_ref, kAXValueTypeCGSize, (&mut size as *mut CGSize).cast());
+            let ok_pos = AXValueGetValue(
+                pos_ref,
+                kAXValueTypeCGPoint,
+                (&mut pos as *mut CGPoint).cast(),
+            );
+            let ok_size = AXValueGetValue(
+                size_ref,
+                kAXValueTypeCGSize,
+                (&mut size as *mut CGSize).cast(),
+            );
             if !ok_pos || !ok_size {
                 return None;
             }
@@ -237,7 +250,10 @@ impl MacOSAXElement {
         }
     }
 
-    fn click_center_with_type(&self, click_type: crate::ClickType) -> Result<crate::ClickResult, AutomationError> {
+    fn click_center_with_type(
+        &self,
+        click_type: crate::ClickType,
+    ) -> Result<crate::ClickResult, AutomationError> {
         let (x, y, w, h) = self.bounds().unwrap_or((0.0, 0.0, 0.0, 0.0));
         if w <= 0.0 || h <= 0.0 {
             return Err(AutomationError::UnsupportedOperation(
@@ -258,9 +274,9 @@ impl MacOSAXElement {
             .button(button, Direction::Click)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to click: {e}")))?;
         if click_type == crate::ClickType::Double {
-            enigo
-                .button(button, Direction::Click)
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to double click: {e}")))?;
+            enigo.button(button, Direction::Click).map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to double click: {e}"))
+            })?;
         }
         Ok(crate::ClickResult {
             method: "macos:ax+enigo".to_string(),
@@ -298,7 +314,11 @@ fn ax_matches_selector(ax: &AXUIElement, selector: &Selector) -> bool {
         Selector::Name(expected) => ax
             .title()
             .ok()
-            .map(|s| s.to_string().to_lowercase().contains(&expected.to_lowercase()))
+            .map(|s| {
+                s.to_string()
+                    .to_lowercase()
+                    .contains(&expected.to_lowercase())
+            })
             .unwrap_or(false),
         Selector::Text(expected) => ax
             .title()
@@ -306,7 +326,10 @@ fn ax_matches_selector(ax: &AXUIElement, selector: &Selector) -> bool {
             .map(|s| s.to_string().contains(expected))
             .unwrap_or(false),
         Selector::Id(expected) | Selector::NativeId(expected) => {
-            let target = expected.strip_prefix('#').unwrap_or(expected).to_lowercase();
+            let target = expected
+                .strip_prefix('#')
+                .unwrap_or(expected)
+                .to_lowercase();
             ax.identifier()
                 .ok()
                 .map(|s| s.to_string().to_lowercase() == target)
@@ -383,7 +406,10 @@ impl UIElementImpl for MacOSUIElement {
         enigo
             .button(Button::Left, Direction::Click)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to double click: {e}")))?;
-        Ok(crate::ClickResult { details: "Double clicked center of bounds".to_string(), ..r })
+        Ok(crate::ClickResult {
+            details: "Double clicked center of bounds".to_string(),
+            ..r
+        })
     }
     fn right_click(&self) -> Result<(), AutomationError> {
         let (x, y, w, h) = self.bounds()?;
@@ -549,13 +575,21 @@ impl UIElementImpl for MacOSUIElement {
     ) -> Result<(), AutomationError> {
         let mut enigo = MacOSEngine::enigo()?;
         enigo
-            .move_mouse(start_x.round() as i32, start_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                start_x.round() as i32,
+                start_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Press)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to press: {e}")))?;
         enigo
-            .move_mouse(end_x.round() as i32, end_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                end_x.round() as i32,
+                end_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Release)
@@ -567,9 +601,9 @@ impl UIElementImpl for MacOSUIElement {
         enigo
             .move_mouse(x.round() as i32, y.round() as i32, enigo::Coordinate::Abs)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
-        enigo
-            .button(Button::Left, Direction::Press)
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to click and hold: {e}")))?;
+        enigo.button(Button::Left, Direction::Press).map_err(|e| {
+            AutomationError::PlatformError(format!("Failed to click and hold: {e}"))
+        })?;
         Ok(())
     }
     fn mouse_move(&self, x: f64, y: f64) -> Result<(), AutomationError> {
@@ -948,7 +982,11 @@ impl UIElementImpl for MacOSAXElement {
         self.id.clone()
     }
     fn role(&self) -> String {
-        self.ax.role().ok().map(|s| s.to_string()).unwrap_or_default()
+        self.ax
+            .role()
+            .ok()
+            .map(|s| s.to_string())
+            .unwrap_or_default()
     }
     fn attributes(&self) -> UIElementAttributes {
         let mut attrs = UIElementAttributes::default();
@@ -956,14 +994,20 @@ impl UIElementImpl for MacOSAXElement {
         attrs.name = self.ax.title().ok().map(|s| s.to_string());
         attrs.properties.insert(
             "identifier".to_string(),
-            self.ax.identifier().ok().map(|s| serde_json::Value::String(s.to_string())),
+            self.ax
+                .identifier()
+                .ok()
+                .map(|s| serde_json::Value::String(s.to_string())),
         );
         attrs.bounds = self.bounds_from_axvalue();
         attrs
     }
     fn children(&self) -> Result<Vec<UIElement>, AutomationError> {
         let attr_children: AXAttribute<CFArray<AXUIElement>> = AXAttribute::children();
-        let children = self.ax.attribute(&attr_children).map_err(ax_err_to_automation)?;
+        let children = self
+            .ax
+            .attribute(&attr_children)
+            .map_err(ax_err_to_automation)?;
         Ok(children
             .iter()
             .map(|c| UIElement::new(Box::new(MacOSAXElement::new((*c).clone()))))
@@ -1132,13 +1176,21 @@ impl UIElementImpl for MacOSAXElement {
     ) -> Result<(), AutomationError> {
         let mut enigo = MacOSEngine::enigo()?;
         enigo
-            .move_mouse(start_x.round() as i32, start_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                start_x.round() as i32,
+                start_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Press)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to press: {e}")))?;
         enigo
-            .move_mouse(end_x.round() as i32, end_y.round() as i32, enigo::Coordinate::Abs)
+            .move_mouse(
+                end_x.round() as i32,
+                end_y.round() as i32,
+                enigo::Coordinate::Abs,
+            )
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
         enigo
             .button(Button::Left, Direction::Release)
@@ -1150,9 +1202,9 @@ impl UIElementImpl for MacOSAXElement {
         enigo
             .move_mouse(x.round() as i32, y.round() as i32, enigo::Coordinate::Abs)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to move mouse: {e}")))?;
-        enigo
-            .button(Button::Left, Direction::Press)
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to click and hold: {e}")))?;
+        enigo.button(Button::Left, Direction::Press).map_err(|e| {
+            AutomationError::PlatformError(format!("Failed to click and hold: {e}"))
+        })?;
         Ok(())
     }
     fn mouse_move(&self, x: f64, y: f64) -> Result<(), AutomationError> {
@@ -1263,7 +1315,10 @@ impl MacOSEngine {
     }
 
     fn root_element(&self) -> UIElement {
-        UIElement::new(Box::new(StubElement::new("Desktop", Some("macOS".to_string()))))
+        UIElement::new(Box::new(StubElement::new(
+            "Desktop",
+            Some("macOS".to_string()),
+        )))
     }
 
     fn list_windows(&self) -> Result<Vec<MacOSWindowInfo>, AutomationError> {
@@ -1298,7 +1353,11 @@ impl MacOSEngine {
                     .and_then(|v| v.downcast::<CFString>())
                     .map(|s| {
                         let t = s.to_string();
-                        if t.is_empty() { None } else { Some(t) }
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t)
+                        }
                     })
                     .unwrap_or(None);
 
@@ -1380,8 +1439,9 @@ impl MacOSEngine {
     }
 
     fn monitor_list(&self) -> Result<Vec<xcap::Monitor>, AutomationError> {
-        xcap::Monitor::all()
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to enumerate monitors: {e}")))
+        xcap::Monitor::all().map_err(|e| {
+            AutomationError::PlatformError(format!("Failed to enumerate monitors: {e}"))
+        })
     }
 
     fn enigo() -> Result<Enigo, AutomationError> {
@@ -1469,9 +1529,9 @@ impl MacOSEngine {
                 AutomationError::InvalidArgument("Invalid UTF-8 in key sequence".to_string())
             })?;
             let s = ch.to_string();
-            enigo.text(&s).map_err(|e| {
-                AutomationError::PlatformError(format!("Failed to type text: {e}"))
-            })?;
+            enigo
+                .text(&s)
+                .map_err(|e| AutomationError::PlatformError(format!("Failed to type text: {e}")))?;
 
             for m in held_mods.drain(..).rev() {
                 let _ = enigo.key(m, Direction::Release);
@@ -1519,7 +1579,11 @@ impl MacOSEngine {
                 current_root = Some(UIElement::new(Box::new(MacOSAXElement::new(found))));
             }
             return current_root
-                .and_then(|u| u.as_any().downcast_ref::<MacOSAXElement>().map(|m| m.ax.clone()))
+                .and_then(|u| {
+                    u.as_any()
+                        .downcast_ref::<MacOSAXElement>()
+                        .map(|m| m.ax.clone())
+                })
                 .ok_or_else(|| AutomationError::ElementNotFound("No element found".to_string()));
         }
 
@@ -1672,8 +1736,9 @@ impl AccessibilityEngine for MacOSEngine {
         // Note: we don't currently poll on timeout for find_elements.
         let ax_root = Self::ax_root_from_uielement(root);
         let selector_owned = selector.clone();
-        let collector =
-            ElementsCollectorWithWindows::new(&ax_root, move |ax| ax_matches_selector(ax, &selector_owned));
+        let collector = ElementsCollectorWithWindows::new(&ax_root, move |ax| {
+            ax_matches_selector(ax, &selector_owned)
+        });
         let els = collector.find_all();
         Ok(els
             .into_iter()
@@ -1688,7 +1753,9 @@ impl AccessibilityEngine for MacOSEngine {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|e| AutomationError::PlatformError(format!("Failed to spawn 'open -a': {e}")))?;
+            .map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to spawn 'open -a': {e}"))
+            })?;
 
         if !status.success() {
             return Err(AutomationError::PlatformError(
@@ -1710,7 +1777,10 @@ impl AccessibilityEngine for MacOSEngine {
     }
 
     fn activate_application(&self, _app_name: &str) -> Result<(), AutomationError> {
-        let script = format!("tell application \"{}\" to activate", _app_name.replace('"', "\\\""));
+        let script = format!(
+            "tell application \"{}\" to activate",
+            _app_name.replace('"', "\\\"")
+        );
         let status = std::process::Command::new("osascript")
             .args(["-e", &script])
             .stdin(Stdio::null())
@@ -1764,7 +1834,12 @@ impl AccessibilityEngine for MacOSEngine {
         Ok(())
     }
 
-    fn click_at_coordinates(&self, x: f64, y: f64, _restore_cursor: bool) -> Result<(), AutomationError> {
+    fn click_at_coordinates(
+        &self,
+        x: f64,
+        y: f64,
+        _restore_cursor: bool,
+    ) -> Result<(), AutomationError> {
         self.click_at_coordinates_with_type(x, y, crate::ClickType::Left, false)
     }
 
@@ -1790,9 +1865,9 @@ impl AccessibilityEngine for MacOSEngine {
             .button(button, Direction::Click)
             .map_err(|e| AutomationError::PlatformError(format!("Failed to click: {e}")))?;
         if click_type == crate::ClickType::Double {
-            enigo
-                .button(button, Direction::Click)
-                .map_err(|e| AutomationError::PlatformError(format!("Failed to double click: {e}")))?;
+            enigo.button(button, Direction::Click).map_err(|e| {
+                AutomationError::PlatformError(format!("Failed to double click: {e}"))
+            })?;
         }
         Ok(())
     }
@@ -2038,7 +2113,11 @@ impl AccessibilityEngine for MacOSEngine {
         enigo.key(Key::Meta, Direction::Press).map_err(|e| {
             AutomationError::PlatformError(format!("Failed to hold Cmd for zoom: {e}"))
         })?;
-        let key = if steps > 0 { Key::Unicode('+') } else { Key::Unicode('-') };
+        let key = if steps > 0 {
+            Key::Unicode('+')
+        } else {
+            Key::Unicode('-')
+        };
         for _ in 0..steps.unsigned_abs() {
             enigo.key(key.clone(), Direction::Click).map_err(|e| {
                 AutomationError::PlatformError(format!("Failed to adjust zoom: {e}"))
@@ -2060,7 +2139,11 @@ impl AccessibilityEngine for MacOSEngine {
         let mut chosen: Option<AXUIElement> = None;
         for w in windows.iter() {
             let w_title = w.title().ok().map(|s| s.to_string()).unwrap_or_default();
-            if title.is_none() || title.map(|t| w_title.to_lowercase().contains(&t.to_lowercase())).unwrap_or(false) {
+            if title.is_none()
+                || title
+                    .map(|t| w_title.to_lowercase().contains(&t.to_lowercase()))
+                    .unwrap_or(false)
+            {
                 chosen = Some((*w).clone());
                 break;
             }
@@ -2086,4 +2169,3 @@ impl AccessibilityEngine for MacOSEngine {
         self
     }
 }
-

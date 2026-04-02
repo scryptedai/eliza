@@ -1,5 +1,5 @@
-use std::time::Duration;
 use computeruse_workflow_recorder::{WorkflowEvent, WorkflowRecorder, WorkflowRecorderConfig};
+use std::time::Duration;
 use tokio_stream::StreamExt;
 
 #[tokio::main]

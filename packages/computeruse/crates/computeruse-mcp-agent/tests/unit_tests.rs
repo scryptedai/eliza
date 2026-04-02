@@ -1,6 +1,6 @@
-use serde_json::json;
 use computeruse_mcp_agent::scripting_engine::find_executable;
 use computeruse_mcp_agent::utils::{ExecuteSequenceArgs, SequenceStep, ToolCall};
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[test]
@@ -865,8 +865,8 @@ try {
 #[cfg_attr(not(target_os = "windows"), ignore)]
 async fn test_debug_nodejs_execution_with_logs() {
     // Direct test of our Node.js execution to see stdout/stderr
-    use std::process::Stdio;
     use computeruse_mcp_agent::scripting_engine::find_executable;
+    use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
 
@@ -1036,8 +1036,8 @@ try {
 #[ignore] // wont work in ci
 async fn test_nodejs_execution_with_local_bindings() {
     // Test JavaScript execution using local computeruse.js bindings
-    use std::process::Stdio;
     use computeruse_mcp_agent::scripting_engine::find_executable;
+    use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
 

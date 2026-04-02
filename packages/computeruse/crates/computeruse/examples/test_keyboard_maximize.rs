@@ -1,7 +1,7 @@
 // Test keyboard-based maximize (Win+Up)
+use computeruse::Desktop;
 use std::thread::sleep;
 use std::time::Duration;
-use computeruse::Desktop;
 
 #[cfg(not(target_os = "windows"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

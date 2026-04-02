@@ -2,6 +2,8 @@ use crate::cancellation::RequestManager;
 use crate::mcp_types::{FontStyle, TextPosition, TreeOutputFormat};
 use crate::tool_logging::{LogCapture, LogCaptureLayer};
 use anyhow::Result;
+use computeruse::WindowManager;
+use computeruse::{AutomationError, Desktop, UIElement};
 use rmcp::service::{Peer, RoleServer};
 use rmcp::{schemars, schemars::JsonSchema};
 use serde::{Deserialize, Serialize};
@@ -10,8 +12,6 @@ use std::env;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use computeruse::WindowManager;
-use computeruse::{AutomationError, Desktop, UIElement};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{warn, Instrument, Level};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter, Layer};
@@ -236,6 +236,12 @@ pub struct ActionOptions {
         description = "Timeout in milliseconds for post-action verification. The system will poll until verification passes or timeout is reached. Defaults to 2000ms if not specified."
     )]
     pub verify_timeout_ms: Option<u64>,
+
+    #[schemars(
+        description = "Optional opaque idempotency key. If the same (tool, key) pair is called again within 5 minutes, the cached result is returned instead of re-executing the action. Use to make retries safe for side-effecting steps."
+    )]
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 /// Common fields for visual highlighting before actions
@@ -435,6 +441,15 @@ pub struct DesktopWrapper {
     /// When emit.progress() is called, notifications are sent to ALL connected clients
     #[serde(skip)]
     pub broadcast_peers: Arc<TokioMutex<Vec<Peer<RoleServer>>>>,
+    /// Execution-safety policy gating `run_command`, `write_file`, etc.
+    /// Loaded once at startup from env / `~/.computeruse/policy.toml`.
+    #[serde(skip)]
+    pub exec_policy: crate::exec_policy::ExecPolicy,
+    /// In-process idempotency cache: when a tool call carries
+    /// `"idempotency_key"`, a repeat within TTL returns the cached
+    /// [`CallToolResult`] instead of re-executing. See [`crate::idempotency`].
+    #[serde(skip)]
+    pub idempotency: Arc<crate::idempotency::IdempotencyCache>,
 }
 
 impl Default for DesktopWrapper {
@@ -1596,6 +1611,19 @@ pub struct ExecuteSequenceArgs {
     pub window_mgmt: WindowManagementOptions,
 }
 
+/// Arguments for the `resume_sequence` tool — see [`crate::idempotency::read_checkpoint`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ResumeSequenceArgs {
+    #[schemars(
+        description = "Workflow identifier whose checkpoint should be read (matches `execute_sequence.workflow_id`)."
+    )]
+    pub workflow_id: Option<String>,
+    #[schemars(
+        description = "Workflow file:// URL (alternative to workflow_id; the folder name is used to locate state.json)."
+    )]
+    pub url: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum VariableType {
@@ -1653,6 +1681,26 @@ pub struct ToolGroup {
 pub enum SequenceItem {
     Tool { tool_call: ToolCall },
     Group { tool_group: ToolGroup },
+}
+
+/// Arguments for `canvas_present` — exactly one of `html`/`url`/`image_path`
+/// should be set; if more than one is provided, precedence is
+/// `html > url > image_path`.
+#[derive(Deserialize, JsonSchema, Debug, Clone, Default)]
+pub struct CanvasPresentArgs {
+    #[schemars(description = "Inline HTML to render in the canvas content frame.")]
+    pub html: Option<String>,
+    #[schemars(description = "External URL to load in an <iframe> inside the canvas.")]
+    pub url: Option<String>,
+    #[schemars(
+        description = "Filesystem path to an image (PNG/JPEG) to display full-bleed in the canvas."
+    )]
+    pub image_path: Option<String>,
+    #[schemars(
+        description = "Open the system browser at the canvas URL after presenting. \
+Defaults to true on the first present call, false thereafter."
+    )]
+    pub open_browser: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema, Debug, Clone)]
@@ -2357,7 +2405,8 @@ pub async fn find_element_with_fallbacks(
     let primary_clone = primary_selector.to_string();
     let primary_task = tokio::spawn(
         async move {
-            let locator = desktop_clone.locator(computeruse::Selector::from(primary_clone.as_str()));
+            let locator =
+                desktop_clone.locator(computeruse::Selector::from(primary_clone.as_str()));
             match locator.first(Some(timeout_duration)).await {
                 Ok(element) => Ok((element, primary_clone)),
                 Err(e) => Err((primary_clone, e)),
@@ -2495,7 +2544,9 @@ pub async fn find_element_with_fallbacks(
         find_start.elapsed().as_millis(),
         primary_selector
     );
-    Err(computeruse::AutomationError::ElementNotFound(combined_error))
+    Err(computeruse::AutomationError::ElementNotFound(
+        combined_error,
+    ))
 }
 
 /// A robust helper that finds a UI element and executes a provided action on it,

@@ -1,5 +1,5 @@
-use napi::{self, Status};
 use computeruse::errors::AutomationError;
+use napi::{self, Status};
 
 /// Map ComputerUse errors to NAPI errors
 pub fn map_error(err: AutomationError) -> napi::Error {

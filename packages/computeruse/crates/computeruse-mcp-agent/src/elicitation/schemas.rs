@@ -70,6 +70,24 @@ pub enum ErrorRecoveryAction {
     Abort,
 }
 
+/// Approval for a gated execution (run_command / write_file / etc.).
+/// Surfaced when [`crate::exec_policy::ExecPolicy::evaluate`] returns
+/// `Decision::AskUser`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[schemars(description = "Approve or deny this command/file operation")]
+pub struct ExecApproval {
+    /// Allow this specific operation to run now.
+    #[schemars(description = "Allow this operation to run?")]
+    pub approved: bool,
+
+    /// If true, the same (tool, command, cwd) tuple will be auto-approved
+    /// for the rest of this session and persisted to
+    /// `~/.computeruse/approvals.json`.
+    #[schemars(description = "Remember this approval for future identical calls?")]
+    #[serde(default)]
+    pub remember: bool,
+}
+
 /// Confirmation for destructive or irreversible actions
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(description = "Confirm this action before proceeding")]
@@ -129,6 +147,7 @@ pub struct UserResponse {
 
 // Mark types as safe for elicitation (generates proper JSON schemas)
 elicit_safe!(WorkflowContext);
+elicit_safe!(ExecApproval);
 elicit_safe!(ElementDisambiguation);
 elicit_safe!(ErrorRecoveryChoice);
 elicit_safe!(ActionConfirmation);

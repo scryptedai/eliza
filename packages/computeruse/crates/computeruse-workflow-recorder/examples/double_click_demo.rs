@@ -1,7 +1,7 @@
-use std::time::Duration;
 use computeruse_workflow_recorder::{
     MouseEventType, WorkflowEvent, WorkflowRecorder, WorkflowRecorderConfig,
 };
+use std::time::Duration;
 use tokio::time::timeout;
 use tracing::info;
 

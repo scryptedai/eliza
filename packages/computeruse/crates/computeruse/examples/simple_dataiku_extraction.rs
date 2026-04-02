@@ -13,8 +13,8 @@
 //! - Closes dev tools
 //! - Returns the result as a string
 
-use std::time::Duration;
 use computeruse::{Browser, Desktop};
+use std::time::Duration;
 use tokio::time::sleep;
 use tracing::info;
 

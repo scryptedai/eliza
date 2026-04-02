@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use computeruse_workflow_recorder::{
     MouseEventType, WorkflowEvent, WorkflowRecorder, WorkflowRecorderConfig,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio_stream::StreamExt;
 
 #[cfg(target_os = "windows")]

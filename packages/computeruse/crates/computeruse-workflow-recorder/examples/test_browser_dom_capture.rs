@@ -1,10 +1,10 @@
 // Test example for browser DOM element capture
 // Run with: cargo run --release --example test_browser_dom_capture
 
-use std::time::Duration;
 use computeruse::Desktop;
 use computeruse_workflow_recorder::browser_context::BrowserContextRecorder;
 use computeruse_workflow_recorder::Position;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,7 +1,7 @@
+use computeruse::Desktop;
 /// Example demonstrating how to measure element function performance
 /// This is a simplified version of what the benchmarks do
 use std::time::Instant;
-use computeruse::Desktop;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

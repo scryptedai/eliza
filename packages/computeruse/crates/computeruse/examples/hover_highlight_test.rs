@@ -5,9 +5,9 @@ fn main() -> Result<(), computeruse::AutomationError> {
 }
 
 #[cfg(target_os = "windows")]
-use std::time::Duration;
-#[cfg(target_os = "windows")]
 use computeruse::{AutomationError, Desktop, FontStyle, TextPosition};
+#[cfg(target_os = "windows")]
+use std::time::Duration;
 #[cfg(target_os = "windows")]
 use tokio::time::sleep;
 #[cfg(target_os = "windows")]

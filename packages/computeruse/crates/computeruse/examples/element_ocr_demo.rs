@@ -1,4 +1,3 @@
-use std::time::Duration;
 /// Example demonstrating element OCR functionality
 ///
 /// This example shows how to:
@@ -7,6 +6,7 @@ use std::time::Duration;
 /// 3. Capture screenshots of specific elements and perform OCR
 /// 4. Compare different text extraction methods
 use computeruse::{AutomationError, Desktop};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), AutomationError> {

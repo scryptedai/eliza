@@ -1,7 +1,7 @@
 use crate::events::EventMetadata;
+use computeruse::UIElement;
 use rdev::Key;
 use std::time::Instant;
-use computeruse::UIElement;
 use tracing::{error, info};
 
 /// Represents an input event that requires UI Automation processing.

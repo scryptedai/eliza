@@ -1,5 +1,5 @@
-use std::time::Duration;
 use computeruse::{AutomationError, Desktop, FontStyle, TextPosition};
+use std::time::Duration;
 use tokio::time::sleep;
 
 #[tokio::main]

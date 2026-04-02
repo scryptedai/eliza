@@ -1,6 +1,6 @@
 // Import the functions to be tested
-use serde_json::json;
 use computeruse_mcp_agent::helpers::substitute_variables;
+use serde_json::json;
 
 #[test]
 fn test_substitute_no_variables() {

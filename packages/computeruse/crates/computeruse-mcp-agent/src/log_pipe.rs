@@ -196,7 +196,10 @@ impl LogPipeServer {
             let _ = shutdown_rx.recv().await;
         });
 
-        Ok(LogPipeServerHandle { handle, shutdown_tx })
+        Ok(LogPipeServerHandle {
+            handle,
+            shutdown_tx,
+        })
     }
 }
 

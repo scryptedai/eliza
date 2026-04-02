@@ -116,7 +116,10 @@ impl WindowManager {
 
     /// Get topmost window for a specific PID
     #[napi]
-    pub async fn get_topmost_window_for_pid(&self, #[allow(unused_variables)] pid: u32) -> napi::Result<Option<WindowInfo>> {
+    pub async fn get_topmost_window_for_pid(
+        &self,
+        #[allow(unused_variables)] pid: u32,
+    ) -> napi::Result<Option<WindowInfo>> {
         #[cfg(target_os = "windows")]
         {
             Ok(self
@@ -157,7 +160,10 @@ impl WindowManager {
     /// Minimize only always-on-top windows (excluding target)
     /// Returns the number of windows minimized
     #[napi]
-    pub async fn minimize_always_on_top_windows(&self, #[allow(unused_variables)] target_hwnd: i64) -> napi::Result<u32> {
+    pub async fn minimize_always_on_top_windows(
+        &self,
+        #[allow(unused_variables)] target_hwnd: i64,
+    ) -> napi::Result<u32> {
         #[cfg(target_os = "windows")]
         {
             self.inner
@@ -180,7 +186,10 @@ impl WindowManager {
 
     /// Minimize all visible windows except the target
     #[napi]
-    pub async fn minimize_all_except(&self, #[allow(unused_variables)] target_hwnd: i64) -> napi::Result<u32> {
+    pub async fn minimize_all_except(
+        &self,
+        #[allow(unused_variables)] target_hwnd: i64,
+    ) -> napi::Result<u32> {
         #[cfg(target_os = "windows")]
         {
             self.inner
@@ -199,7 +208,10 @@ impl WindowManager {
     /// Maximize window if not already maximized
     /// Returns true if the window was maximized (wasn't already maximized)
     #[napi]
-    pub async fn maximize_if_needed(&self, #[allow(unused_variables)] hwnd: i64) -> napi::Result<bool> {
+    pub async fn maximize_if_needed(
+        &self,
+        #[allow(unused_variables)] hwnd: i64,
+    ) -> napi::Result<bool> {
         #[cfg(target_os = "windows")]
         {
             self.inner
@@ -220,7 +232,10 @@ impl WindowManager {
     /// This uses AttachThreadInput to bypass Windows' focus-stealing prevention.
     /// Returns true if the window is now in the foreground.
     #[napi]
-    pub async fn bring_window_to_front(&self, #[allow(unused_variables)] hwnd: i64) -> napi::Result<bool> {
+    pub async fn bring_window_to_front(
+        &self,
+        #[allow(unused_variables)] hwnd: i64,
+    ) -> napi::Result<bool> {
         #[cfg(target_os = "windows")]
         {
             self.inner
@@ -241,7 +256,10 @@ impl WindowManager {
     /// Minimize window if not already minimized
     /// Returns true if the window was minimized (wasn't already minimized)
     #[napi]
-    pub async fn minimize_if_needed(&self, #[allow(unused_variables)] hwnd: i64) -> napi::Result<bool> {
+    pub async fn minimize_if_needed(
+        &self,
+        #[allow(unused_variables)] hwnd: i64,
+    ) -> napi::Result<bool> {
         #[cfg(target_os = "windows")]
         {
             self.inner
@@ -326,7 +344,10 @@ impl WindowManager {
 
     /// Track a window as the target for restoration
     #[napi]
-    pub async fn set_target_window(&self, #[allow(unused_variables)] hwnd: i64) -> napi::Result<()> {
+    pub async fn set_target_window(
+        &self,
+        #[allow(unused_variables)] hwnd: i64,
+    ) -> napi::Result<()> {
         #[cfg(target_os = "windows")]
         {
             self.inner.set_target_window(hwnd as isize).await;

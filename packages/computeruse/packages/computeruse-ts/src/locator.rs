@@ -1,6 +1,6 @@
-use napi_derive::napi;
 use computeruse::locator::WaitCondition as ComputerUseWaitCondition;
 use computeruse::Locator as ComputerUseLocator;
+use napi_derive::napi;
 
 use crate::map_error;
 use crate::Element;

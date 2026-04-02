@@ -2,10 +2,10 @@
 
 use crate::omniparser::OmniparserItem;
 use crate::vision::VisionElement;
-use std::collections::HashMap;
 use computeruse::element::SerializableUIElement;
 use computeruse::OcrElement;
 use computeruse::UINode;
+use std::collections::HashMap;
 
 // Re-export clustering types and functions from core computeruse crate
 pub use computeruse::{

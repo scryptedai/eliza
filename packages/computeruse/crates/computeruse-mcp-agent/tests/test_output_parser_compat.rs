@@ -1,6 +1,6 @@
-use serde_json::json;
 use computeruse_mcp_agent::output_parser::{run_output_parser, OutputParserDefinition};
 use computeruse_mcp_agent::utils::ExecuteSequenceArgs;
+use serde_json::json;
 
 #[tokio::test]
 async fn test_legacy_output_parser_field() {

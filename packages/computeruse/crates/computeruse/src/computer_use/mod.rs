@@ -11,6 +11,11 @@ use crate::Desktop;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::Local;
+use computeruse_computer_use::{
+    call_computer_use_backend, convert_normalized_to_screen, translate_gemini_keys,
+    ComputerUseActionResponse, ComputerUsePreviousAction, ComputerUseResult, ComputerUseStep,
+    ProgressCallback,
+};
 use image::codecs::png::PngEncoder;
 use image::imageops::FilterType;
 use image::{ExtendedColorType, ImageBuffer, ImageEncoder, Rgba};
@@ -19,11 +24,6 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::time::Duration;
 use sysinfo::{ProcessesToUpdate, System};
-use computeruse_computer_use::{
-    call_computer_use_backend, convert_normalized_to_screen, translate_gemini_keys,
-    ComputerUseActionResponse, ComputerUsePreviousAction, ComputerUseResult, ComputerUseStep,
-    ProgressCallback,
-};
 use tracing::{info, warn};
 
 // ===== Internal Types =====

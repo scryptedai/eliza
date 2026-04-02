@@ -172,13 +172,73 @@ struct MacOSHealthChecker;
 #[async_trait]
 impl PlatformHealthCheck for MacOSHealthChecker {
     async fn check_health(&self) -> HealthCheckResult {
-        // For now, return a healthy status for macOS
-        // TODO: Implement actual Accessibility API checks
-        let mut result = HealthCheckResult::healthy("macos");
-        result.add_diagnostic(
-            "note",
-            "Accessibility API health checks not yet implemented",
-        );
+        use std::time::Instant;
+        let started = Instant::now();
+
+        let mut result = HealthCheckResult {
+            platform: "macos".to_string(),
+            error_message: None,
+            ..Default::default()
+        };
+
+        // 1. Accessibility permission — the gate for the entire AX API.
+        //    AXIsProcessTrusted() returns false until the user grants the
+        //    hosting process permission in System Settings → Privacy &
+        //    Security → Accessibility.
+        let trusted = unsafe { accessibility_sys::AXIsProcessTrusted() };
+        result.api_available = trusted;
+        result.add_diagnostic("accessibility_permission", trusted);
+
+        // 2. Desktop / system-wide element reachable
+        let system_wide = accessibility::AXUIElement::system_wide();
+        let focused_app = system_wide.attribute(&accessibility::AXAttribute::new(
+            &core_foundation::string::CFString::new("AXFocusedApplication"),
+        ));
+        result.desktop_accessible = focused_app.is_ok();
+        match &focused_app {
+            Ok(_) => {
+                result.add_diagnostic("system_wide_element", "ok");
+            }
+            Err(e) => {
+                result.add_diagnostic("system_wide_element", format!("{e:?}"));
+            }
+        }
+
+        // 3. Can we actually enumerate UI elements? Try listing running apps
+        //    via the cross-platform Desktop façade so the result reflects
+        //    what callers will experience.
+        match crate::Desktop::new(false, false) {
+            Ok(desktop) => match desktop.applications() {
+                Ok(apps) => {
+                    result.can_enumerate_elements = !apps.is_empty();
+                    result.add_diagnostic("application_count", apps.len());
+                }
+                Err(e) => {
+                    result.can_enumerate_elements = false;
+                    result.add_diagnostic("enumerate_error", e.to_string());
+                }
+            },
+            Err(e) => {
+                result.can_enumerate_elements = false;
+                result.add_diagnostic("desktop_init_error", e.to_string());
+            }
+        }
+
+        if !trusted {
+            result.error_message = Some(
+                "Accessibility permission not granted. Open System Settings → \
+                 Privacy & Security → Accessibility and enable this process \
+                 (or the terminal/IDE hosting it), then restart."
+                    .to_string(),
+            );
+            result.add_diagnostic(
+                "remediation",
+                "System Settings → Privacy & Security → Accessibility → enable this app",
+            );
+        }
+
+        result.check_duration_ms = started.elapsed().as_millis() as u64;
+        result.update_status();
         result
     }
 }
@@ -191,12 +251,126 @@ struct LinuxHealthChecker;
 #[async_trait]
 impl PlatformHealthCheck for LinuxHealthChecker {
     async fn check_health(&self) -> HealthCheckResult {
-        // For now, return a healthy status for Linux
-        // TODO: Implement actual AT-SPI or X11 accessibility checks
-        let mut result = HealthCheckResult::healthy("linux");
-        result.add_diagnostic("note", "AT-SPI health checks not yet implemented");
+        use std::time::Instant;
+        let started = Instant::now();
+
+        let mut result = HealthCheckResult {
+            platform: "linux".to_string(),
+            error_message: None,
+            ..Default::default()
+        };
+
+        // Display server presence (X11 or Wayland)
+        let display = std::env::var("DISPLAY").ok();
+        let wayland = std::env::var("WAYLAND_DISPLAY").ok();
+        result.add_diagnostic("display", display.clone().unwrap_or_default());
+        result.add_diagnostic("wayland_display", wayland.clone().unwrap_or_default());
+        let has_display = display.is_some() || wayland.is_some();
+        result.desktop_accessible = has_display;
+
+        // AT-SPI accessibility bus — this is the Linux equivalent of the
+        // macOS Accessibility permission. We probe via atspi (already a
+        // platform dep) which speaks D-Bus to org.a11y.Bus.
+        match atspi::AccessibilityConnection::new().await {
+            Ok(conn) => {
+                result.api_available = true;
+                result.add_diagnostic("atspi_bus", "connected");
+                // Try a single round-trip to confirm the registry responds.
+                match conn
+                    .connection()
+                    .call_method(
+                        Some("org.a11y.atspi.Registry"),
+                        "/org/a11y/atspi/accessible/root",
+                        Some("org.a11y.atspi.Accessible"),
+                        "GetChildCount",
+                        &(),
+                    )
+                    .await
+                {
+                    Ok(reply) => {
+                        let count: i32 = reply.body().deserialize().unwrap_or(0);
+                        result.can_enumerate_elements = true;
+                        result.add_diagnostic("root_child_count", count);
+                    }
+                    Err(e) => {
+                        result.can_enumerate_elements = false;
+                        result.add_diagnostic("registry_error", e.to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                result.api_available = false;
+                result.add_diagnostic("atspi_bus", format!("unavailable: {e}"));
+                result.error_message = Some(format!(
+                    "AT-SPI accessibility bus unreachable ({e}). Ensure the \
+                     `at-spi2-core` package is installed and a desktop session \
+                     is running. On GNOME: gsettings set \
+                     org.gnome.desktop.interface toolkit-accessibility true"
+                ));
+            }
+        }
+
+        // Window-management helpers — not hard requirements, but their
+        // absence degrades activate_window / move_window on X11.
+        for tool in ["wmctrl", "xdotool"] {
+            let found = which_in_path(tool);
+            result.add_diagnostic(format!("has_{tool}"), found);
+        }
+
+        if !has_display && result.error_message.is_none() {
+            result.error_message = Some(
+                "No DISPLAY or WAYLAND_DISPLAY set — running headless. \
+                 UI automation requires a graphical session (or Xvfb)."
+                    .to_string(),
+            );
+        }
+
+        result.check_duration_ms = started.elapsed().as_millis() as u64;
+        result.update_status();
         result
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn health_report_is_well_formed() {
+        let r = check_automation_health().await;
+        assert_eq!(r.platform, std::env::consts::OS);
+        // status must be consistent with the component flags
+        let expected = if r.api_available && r.desktop_accessible && r.can_enumerate_elements {
+            HealthStatus::Healthy
+        } else if r.api_available {
+            HealthStatus::Degraded
+        } else {
+            HealthStatus::Unhealthy
+        };
+        assert_eq!(r.status, expected);
+        #[cfg(target_os = "macos")]
+        assert!(
+            r.diagnostics.contains_key("accessibility_permission"),
+            "macOS report must include accessibility_permission diagnostic"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(
+            r.diagnostics.contains_key("atspi_bus"),
+            "linux report must include atspi_bus diagnostic"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn which_in_path(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                let full = dir.join(bin);
+                full.is_file()
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// Health checker for unsupported platforms

@@ -1,5 +1,5 @@
-use std::time::{Duration, Instant};
 use computeruse_workflow_recorder::{WorkflowRecorder, WorkflowRecorderConfig};
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tracing::{info, Level};
@@ -109,7 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let interaction_icon = match click_event.interaction_type {
                         computeruse_workflow_recorder::ButtonInteractionType::Click => "🔘",
                         computeruse_workflow_recorder::ButtonInteractionType::Toggle => "🔄",
-                        computeruse_workflow_recorder::ButtonInteractionType::DropdownToggle => "📋",
+                        computeruse_workflow_recorder::ButtonInteractionType::DropdownToggle => {
+                            "📋"
+                        }
                         computeruse_workflow_recorder::ButtonInteractionType::Submit => "✅",
                         computeruse_workflow_recorder::ButtonInteractionType::Cancel => "❌",
                     };

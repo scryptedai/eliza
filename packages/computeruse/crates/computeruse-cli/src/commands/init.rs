@@ -32,7 +32,10 @@ impl InitCommand {
             ));
         }
 
-        println!("{}", "🚀 Creating new ComputerUse workflow...".bold().cyan());
+        println!(
+            "{}",
+            "🚀 Creating new ComputerUse workflow...".bold().cyan()
+        );
         println!();
 
         // Create directory structure

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use computeruse::{AutomationError, Desktop};
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<(), AutomationError> {
