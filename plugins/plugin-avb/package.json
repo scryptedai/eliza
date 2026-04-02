@@ -21,9 +21,14 @@
   },
   "dependencies": {
     "@elizaos/core": "workspace:*",
-    "@elizaos/plugin-scryptedai": "workspace:*"
+    "@elizaos/plugin-scryptedai": "workspace:*",
+    "@tensorflow/tfjs-node": "^4.22.0"
+  },
+  "optionalDependencies": {
+    "@tensorflow/tfjs-node-gpu": "^4.22.0"
   },
   "devDependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
     "@types/node": "^25.0.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.0"

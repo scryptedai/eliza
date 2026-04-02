@@ -27,6 +27,7 @@
 import type { Plugin } from "@elizaos/core";
 import { generateAvatarAction } from "./action.ts";
 import { AvbService } from "./service.ts";
+import { Slm16Service } from "./slm16/index.ts";
 
 // ----------------------------------------------------------------------------
 // Plugin definition
@@ -36,9 +37,11 @@ export const avbPlugin: Plugin = {
   name: "avb",
   description:
     "Autonomous Virtual Being pipeline — character introspection → avatar " +
-    "generation via db-persisted state machine. Calls scryptedai for actual generation.",
+    "generation via db-persisted state machine. Calls scryptedai for actual " +
+    "generation. Includes SLM16: a background trainer for a 16MB language " +
+    "model (OpenAI Parameter Golf 9×512 U-Net GPT) with Nova Pro intelligence scoring.",
   dependencies: ["scryptedai"],
-  services: [AvbService],
+  services: [AvbService, Slm16Service],
   actions: [generateAvatarAction],
 };
 
@@ -87,3 +90,22 @@ export type {
   PhaseName,
   PhaseSpec,
 } from "./types.ts";
+
+// SLM16 — background trainer + intelligence scoring
+export {
+  ARCH as SLM16_ARCH,
+  QUANT as SLM16_QUANT,
+  SCORING as SLM16_SCORING,
+  SLM16_ENV,
+  SLM16_PATHS,
+  SLM16_SERVICE_TYPE,
+  SLM16_SETTING,
+  Slm16Service,
+  TRAIN_DEFAULTS as SLM16_TRAIN_DEFAULTS,
+} from "./slm16/index.ts";
+export type {
+  Slm16Event,
+  Slm16Meta,
+  Slm16ScoringResult,
+  Slm16TrainingConfig,
+} from "./slm16/index.ts";
