@@ -1,7 +1,7 @@
 {
-  "name": "@elizaos/plugin-avb",
+  "name": "@elizaos/plugin-ffm",
   "version": "0.1.0",
-  "description": "Autonomous Virtual Being pipeline for elizaOS — character introspection → avatar generation via db-persisted state machine",
+  "description": "Five Factor Model (OCEAN) personality engine for elizaOS — seeded trait derivation with empirical distributions + LLM-driven character expansion",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@elizaos/core": "workspace:*",
-    "@elizaos/plugin-ffm": "workspace:*",
     "@elizaos/plugin-scryptedai": "workspace:*"
   },
   "devDependencies": {

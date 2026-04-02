@@ -15,9 +15,7 @@
       "@elizaos/core": ["./packages/typescript/src/index.node.ts"],
       "@elizaos/core/*": ["./packages/typescript/src/*"],
       "@elizaos/plugin-scryptedai": ["./plugins/plugin-scryptedai/src/index.ts"],
-      "@elizaos/plugin-scryptedai/*": ["./plugins/plugin-scryptedai/src/*"],
-      "@elizaos/plugin-ffm": ["./plugins/plugin-ffm/src/index.ts"],
-      "@elizaos/plugin-ffm/*": ["./plugins/plugin-ffm/src/*"]
+      "@elizaos/plugin-scryptedai/*": ["./plugins/plugin-scryptedai/src/*"]
     }
   },
   "include": ["src/**/*.ts"],

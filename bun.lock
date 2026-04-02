@@ -265,6 +265,20 @@
       "version": "0.1.0",
       "dependencies": {
         "@elizaos/core": "workspace:*",
+        "@elizaos/plugin-ffm": "workspace:*",
+        "@elizaos/plugin-scryptedai": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^25.0.3",
+        "typescript": "^5.9.3",
+        "vitest": "^4.0.0",
+      },
+    },
+    "plugins/plugin-ffm": {
+      "name": "@elizaos/plugin-ffm",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elizaos/core": "workspace:*",
         "@elizaos/plugin-scryptedai": "workspace:*",
       },
       "devDependencies": {
@@ -535,6 +549,8 @@
     "@elizaos/interop": ["@elizaos/interop@workspace:packages/interop"],
 
     "@elizaos/plugin-avb": ["@elizaos/plugin-avb@workspace:plugins/plugin-avb"],
+
+    "@elizaos/plugin-ffm": ["@elizaos/plugin-ffm@workspace:plugins/plugin-ffm"],
 
     "@elizaos/plugin-scryptedai": ["@elizaos/plugin-scryptedai@workspace:plugins/plugin-scryptedai"],
 

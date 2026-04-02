@@ -121,6 +121,18 @@ export interface AvbRuntimeSurface {
     adjectives?: string[];
     system?: string;
     style?: { all?: string[]; chat?: string[]; post?: string[] };
+    /**
+     * Open settings bag. The personality bootstrap reads/writes
+     * settings.ffm (the FFM seed-of-record) and reads settings.secrets
+     * only to STRIP it before disk serialization — never to consume it.
+     */
+    settings?: Record<string, unknown> & {
+      ffm?: { seed?: string };
+      secrets?: Record<string, unknown>;
+    };
+    /** Top-level secrets — also stripped before any disk write. */
+    secrets?: Record<string, unknown>;
+    [key: string]: unknown;
   };
   logger: {
     info: (msg: string) => void;

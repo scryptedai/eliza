@@ -86,5 +86,20 @@ export const ENV_AVB_IMAGE_METHOD = "AVB_IMAGE_METHOD";
  */
 export const ENV_AVB_AUTOGEN_ON_BOOT = "AVB_AUTOGEN_ON_BOOT";
 
+/**
+ * Whether the personality bootstrap should write the merged character back
+ * to character.json on disk. Default-on. Set "false" to keep the merge
+ * in-memory only (the live runtime still sees the enriched character;
+ * only the disk write is skipped). Tests run with this off.
+ */
+export const ENV_AVB_PERSIST_PERSONALITY = "AVB_PERSIST_PERSONALITY";
+
+/**
+ * How long the boot-time personality bootstrap waits for each FFM
+ * expansion call (narrative, then voice). Tracks PIPELINE.TEXT_PHASE's
+ * deadline (60s scryptedai text window + 30s headroom).
+ */
+export const FFM_EXPANSION_TIMEOUT_MS = 90_000;
+
 /** Default scryptedai client method for image generation (Seedream 4). */
 export const DEFAULT_IMAGE_METHOD = "invokeSeedream4Generation";

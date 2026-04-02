@@ -9,6 +9,11 @@
 
 import { getModelLimits, type Task } from "@elizaos/core";
 import type {
+  FfmProfile,
+  NarrativeExpansion,
+  VoiceExpansion,
+} from "@elizaos/plugin-ffm";
+import type {
   JobRecord,
   JobTerminalListener,
   NormalizedJobResult,
@@ -16,7 +21,7 @@ import type {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tagForJob, tagForRun, WORKER_NAMES } from "../constants.ts";
 import { IMAGE_PROMPT_MODEL } from "../introspect.ts";
-import { AvbService } from "../service.ts";
+import { AvbService, stripSecrets } from "../service.ts";
 import type { AvbPhaseMetadata } from "../types.ts";
 
 // ----------------------------------------------------------------------------
@@ -51,6 +56,125 @@ interface FakeScrypted {
   __jobs: Map<string, JobRecord>;
   __listeners: Set<JobTerminalListener>;
   __setTerminal: (jobId: string, result: NormalizedJobResult) => void;
+}
+
+// ----------------------------------------------------------------------------
+// Fake FFM service
+//
+// Resolves all expansions synchronously (next microtask) so the
+// fire-and-forget chain settles inside flush(). startNarrative/startVoice
+// just stash a result keyed by jobId; awaitExpansion looks it up.
+// ----------------------------------------------------------------------------
+
+interface FakeFfm {
+  deriveProfile: (seed?: string) => Promise<FfmProfile>;
+  startNarrativeExpansion: (
+    profile: FfmProfile,
+    name: string,
+  ) => Promise<{ jobId: string }>;
+  startVoiceExpansion: (
+    profile: FfmProfile,
+    narrative: NarrativeExpansion,
+    name: string,
+  ) => Promise<{ jobId: string }>;
+  awaitExpansion: (jobId: string, timeoutMs?: number) => Promise<unknown>;
+  // Test control surface
+  __profile: FfmProfile;
+  __narrative: NarrativeExpansion;
+  __voice: VoiceExpansion;
+  __calls: { derive: number; narrative: number; voice: number };
+}
+
+const FAKE_SEED =
+  "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+function makeFakeFfm(): FakeFfm {
+  const profile: FfmProfile = {
+    seed: FAKE_SEED,
+    traits: { O: 0.6, C: 0.5, E: 0.55, A: 0.58, N: 0.4 },
+    archetype: {
+      code: 22,
+      sloan: "IUSAC",
+      label: "The Free Spirit",
+      summary: "Curious, spontaneous, drawn to people; rarely rattled.",
+    },
+  };
+  const narrative: NarrativeExpansion = {
+    bio: [
+      "Test bio line one.",
+      "Test bio line two.",
+      "Test bio line three.",
+      "Backstory line.",
+      "More backstory.",
+      "Motivation line.",
+      "Avoidance line.",
+      "Contradiction line.",
+    ],
+    beliefs: ["Belief one.", "Belief two.", "Belief three.", "Belief four."],
+    adjectives: ["curious", "warm", "spontaneous", "resilient", "open"],
+    topics: ["systems", "people", "patterns", "stories"],
+  };
+  const voice: VoiceExpansion = {
+    messageExamples: [
+      [
+        { name: "user", content: { text: "Can you help me?" } },
+        { name: "TestAgent", content: { text: "Of course." } },
+      ],
+      [
+        { name: "user", content: { text: "I think you're wrong." } },
+        { name: "TestAgent", content: { text: "Tell me more." } },
+      ],
+      [
+        { name: "user", content: { text: "How's your day?" } },
+        { name: "TestAgent", content: { text: "Pretty good actually." } },
+      ],
+      [
+        { name: "user", content: { text: "Bad news." } },
+        { name: "TestAgent", content: { text: "Walk me through it." } },
+      ],
+      [
+        { name: "user", content: { text: "What if time were a loop?" } },
+        { name: "TestAgent", content: { text: "Then we'd already know." } },
+      ],
+      [
+        { name: "user", content: { text: "Can you commit to this?" } },
+        { name: "TestAgent", content: { text: "Yes. By Friday." } },
+      ],
+    ],
+    postExamples: ["Post one.", "Post two.", "Post three.", "Post four."],
+    style: { all: ["Be direct."], chat: ["Be warm."], post: ["Be brief."] },
+  };
+
+  const results = new Map<string, unknown>();
+  const calls = { derive: 0, narrative: 0, voice: 0 };
+
+  return {
+    __profile: profile,
+    __narrative: narrative,
+    __voice: voice,
+    __calls: calls,
+    deriveProfile: vi.fn(async () => {
+      calls.derive++;
+      return profile;
+    }),
+    startNarrativeExpansion: vi.fn(async () => {
+      calls.narrative++;
+      const jobId = `narr-${calls.narrative}`;
+      results.set(jobId, { kind: "narrative", ...narrative });
+      return { jobId };
+    }),
+    startVoiceExpansion: vi.fn(async () => {
+      calls.voice++;
+      const jobId = `voice-${calls.voice}`;
+      results.set(jobId, { kind: "voice", ...voice });
+      return { jobId };
+    }),
+    awaitExpansion: vi.fn(async (jobId: string) => {
+      const r = results.get(jobId);
+      if (!r) throw new Error(`no fake expansion for ${jobId}`);
+      return r;
+    }),
+  };
 }
 
 function makeFakeScrypted(): FakeScrypted {
@@ -159,6 +283,7 @@ interface FakeRuntime {
   __memories: Array<Record<string, unknown>>;
   __events: Array<{ name: string; payload: unknown }>;
   __scrypted: FakeScrypted;
+  __ffm: FakeFfm;
   __settings: Map<string, unknown>;
 }
 
@@ -168,20 +293,31 @@ function makeFakeRuntime(settings: Record<string, unknown> = {}): FakeRuntime {
   const memories: Array<Record<string, unknown>> = [];
   const events: Array<{ name: string; payload: unknown }> = [];
   const scrypted = makeFakeScrypted();
+  const ffm = makeFakeFfm();
   // Default autogen OFF in tests so existing assertions (task counts etc.)
-  // remain deterministic. Individual tests override via the settings param.
+  // remain deterministic. Default persistence OFF so saveCharacter() is
+  // never called against the real filesystem. Individual tests override.
   const settingsMap = new Map<string, unknown>(
-    Object.entries({ AVB_AUTOGEN_ON_BOOT: "false", ...settings }),
+    Object.entries({
+      AVB_AUTOGEN_ON_BOOT: "false",
+      AVB_PERSIST_PERSONALITY: "false",
+      ...settings,
+    }),
   );
   let nextId = 1;
 
   return {
     agentId: "agent-123",
+    // The default test character has an FFM seed already set, so
+    // ensurePersonality() early-returns and existing autostart tests'
+    // promise-chain depth is unchanged. Tests that exercise the bootstrap
+    // path explicitly delete settings.ffm before start().
     character: {
       name: "TestAgent",
       bio: ["A test agent for unit testing."],
       adjectives: ["precise", "deterministic"],
       topics: ["testing", "validation"],
+      settings: { ffm: { seed: FAKE_SEED } },
     },
     logger: {
       info: vi.fn(),
@@ -191,10 +327,12 @@ function makeFakeRuntime(settings: Record<string, unknown> = {}): FakeRuntime {
     },
     getService<T>(type: string): T | undefined {
       if (type === "scryptedai") return scrypted as unknown as T;
+      if (type === "ffm") return ffm as unknown as T;
       return undefined;
     },
     async getServiceLoadPromise(type: string): Promise<unknown> {
       if (type === "scryptedai") return scrypted;
+      if (type === "ffm") return ffm;
       throw new Error(`Service ${type} not found`);
     },
     getSetting(key: string) {
@@ -251,19 +389,21 @@ function makeFakeRuntime(settings: Record<string, unknown> = {}): FakeRuntime {
     __memories: memories,
     __events: events,
     __scrypted: scrypted,
+    __ffm: ffm,
     __settings: settingsMap,
   };
 }
 
 /**
  * Flush microtasks so fire-and-forget promises (autoStartIfNeeded) settle
- * before assertions run. Two awaits cover the promise-chain depth
- * (getTasks → getMemories → createRun).
+ * before assertions run. The chain depth is roughly:
+ *   getTasks → ensurePersonality(getServiceLoadPromise → derive →
+ *   startNarr → awaitNarr → startVoice → awaitVoice) →
+ *   getMemories → createRun → spawnPhaseTask → createTask
+ * Eight awaits is plenty even when the bootstrap path runs.
  */
 async function flush(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
 }
 
 /** Simulate a TaskService tick: execute every registered worker for its matching tasks. */
@@ -703,5 +843,284 @@ describe("webhook fast-path: eager execute on terminal", () => {
     // TEXT_PHASE should have transitioned without an explicit tick()
     expect(rt.__tasks.size).toBe(1);
     expect([...rt.__tasks.values()][0].name).toBe(WORKER_NAMES.IMAGE_PHASE);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// stripSecrets — direct unit test of the serialization guard
+// ----------------------------------------------------------------------------
+
+describe("stripSecrets()", () => {
+  it("removes both top-level and nested secret stores", () => {
+    const char = {
+      name: "Eliza",
+      bio: ["line"],
+      secrets: { TWITTER_TOKEN: "sk-aaa", PRIVATE_KEY: "0xdeadbeef" },
+      settings: {
+        secrets: { ANTHROPIC_API_KEY: "sk-bbb", ENCRYPTION_SALT: "abc" },
+        ffm: { seed: FAKE_SEED },
+        someOtherKey: "preserved",
+      },
+    };
+
+    const safe = stripSecrets(char);
+
+    expect("secrets" in safe).toBe(false);
+    expect(safe.settings).toBeDefined();
+    expect("secrets" in (safe.settings as object)).toBe(false);
+    // Non-secret settings preserved
+    expect((safe.settings as Record<string, unknown>).ffm).toEqual({
+      seed: FAKE_SEED,
+    });
+    expect((safe.settings as Record<string, unknown>).someOtherKey).toBe(
+      "preserved",
+    );
+    // Other character fields preserved
+    expect(safe.name).toBe("Eliza");
+    expect(safe.bio).toEqual(["line"]);
+  });
+
+  it("does NOT mutate the input character", () => {
+    const char = {
+      name: "Eliza",
+      secrets: { KEY: "value" },
+      settings: { secrets: { NESTED: "value" }, other: 1 },
+    };
+    const before = JSON.stringify(char);
+
+    stripSecrets(char);
+
+    expect(JSON.stringify(char)).toBe(before);
+    expect(char.secrets.KEY).toBe("value");
+    expect(char.settings.secrets.NESTED).toBe("value");
+  });
+
+  it("handles characters with no settings at all", () => {
+    const char = { name: "Eliza", secrets: { KEY: "x" } };
+    const safe = stripSecrets(char);
+
+    expect("secrets" in safe).toBe(false);
+    expect("settings" in safe).toBe(false);
+  });
+
+  it("handles characters with settings but no nested secrets", () => {
+    const char = { name: "Eliza", settings: { ffm: { seed: FAKE_SEED } } };
+    const safe = stripSecrets(char);
+
+    expect((safe.settings as Record<string, unknown>).ffm).toEqual({
+      seed: FAKE_SEED,
+    });
+    expect("secrets" in (safe.settings as object)).toBe(false);
+  });
+
+  it("output round-trips JSON without any secret values present", () => {
+    // The actual safety property: serialized output contains no credentials.
+    const char = {
+      name: "Eliza",
+      secrets: { LEAK_ME: "topsecret-aaa" },
+      settings: { secrets: { LEAK_ME_TOO: "topsecret-bbb" } },
+    };
+    const json = JSON.stringify(stripSecrets(char));
+
+    expect(json).not.toContain("topsecret-aaa");
+    expect(json).not.toContain("topsecret-bbb");
+    expect(json).not.toContain("LEAK_ME");
+  });
+});
+
+// ----------------------------------------------------------------------------
+// FFM personality bootstrap — runs inside autoStartIfNeeded()
+// ----------------------------------------------------------------------------
+
+describe("AvbService: FFM personality bootstrap", () => {
+  /** Build a runtime whose character has NO FFM seed yet. */
+  function makeUnseededRuntime(
+    extraSettings: Record<string, unknown> = {},
+  ): FakeRuntime {
+    const rt = makeFakeRuntime({
+      AVB_AUTOGEN_ON_BOOT: "true",
+      ...extraSettings,
+    });
+    // Wipe the fixture's pre-set seed so hasFfmSeed() → false
+    rt.character = {
+      name: "TestAgent",
+      // Empty bio so mergePersonality has something to fill
+      bio: [],
+      adjectives: [],
+      topics: [],
+    };
+    return rt;
+  }
+
+  it("skips entirely when an FFM seed is already present", async () => {
+    const rt = makeFakeRuntime({ AVB_AUTOGEN_ON_BOOT: "true" });
+    // Default fixture character HAS the seed
+    expect(
+      (rt.character.settings as Record<string, { seed?: string }>).ffm.seed,
+    ).toBe(FAKE_SEED);
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    // FFM never touched
+    expect(rt.__ffm.__calls.derive).toBe(0);
+    expect(rt.__ffm.__calls.narrative).toBe(0);
+    expect(rt.__ffm.__calls.voice).toBe(0);
+    // Avatar pipeline still triggered (downstream check still runs)
+    expect(rt.__tasks.size).toBe(1);
+  });
+
+  it("derives → narrative → voice → merges into runtime.character when no seed", async () => {
+    const rt = makeUnseededRuntime();
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    // FFM call sequence
+    expect(rt.__ffm.__calls.derive).toBe(1);
+    expect(rt.__ffm.__calls.narrative).toBe(1);
+    expect(rt.__ffm.__calls.voice).toBe(1);
+
+    // Voice consumes narrative's output (call-2 receives call-1's bio)
+    const voiceCall = (rt.__ffm.startVoiceExpansion as ReturnType<typeof vi.fn>)
+      .mock.calls[0];
+    expect((voiceCall[1] as NarrativeExpansion).bio).toEqual(
+      rt.__ffm.__narrative.bio,
+    );
+
+    // Live character was mutated in place — settings.ffm written
+    const ffmBlock = (
+      rt.character.settings as Record<string, Record<string, unknown>>
+    ).ffm;
+    expect(ffmBlock.seed).toBe(FAKE_SEED);
+    expect(ffmBlock.traits).toEqual(rt.__ffm.__profile.traits);
+    expect((ffmBlock.archetype as Record<string, unknown>).sloan).toBe("IUSAC");
+
+    // Generated content filled empty slots
+    expect(rt.character.bio).toEqual([
+      ...rt.__ffm.__narrative.bio,
+      ...rt.__ffm.__narrative.beliefs,
+    ]);
+    expect(rt.character.adjectives).toEqual(rt.__ffm.__narrative.adjectives);
+    expect(rt.character.topics).toEqual(rt.__ffm.__narrative.topics);
+
+    // Avatar pipeline runs AFTER bootstrap → digest sees enriched bio
+    expect(rt.__tasks.size).toBe(1);
+    const meta = metaOf([...rt.__tasks.values()][0]);
+    expect(meta.runContext.characterDigest).toContain("Test bio line one");
+  });
+
+  it("never clobbers hand-authored fields (preservative merge)", async () => {
+    const rt = makeUnseededRuntime();
+    rt.character.bio = ["Hand-written bio that must survive."];
+    rt.character.adjectives = ["bespoke"];
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    // FFM ran (seed was missing)
+    expect(rt.__ffm.__calls.derive).toBe(1);
+    // But hand-authored content won
+    expect(rt.character.bio).toEqual(["Hand-written bio that must survive."]);
+    expect(rt.character.adjectives).toEqual(["bespoke"]);
+    // Empty fields still filled
+    expect(rt.character.topics).toEqual(rt.__ffm.__narrative.topics);
+    // Seed always written regardless
+    expect(
+      (rt.character.settings as Record<string, Record<string, unknown>>).ffm
+        .seed,
+    ).toBe(FAKE_SEED);
+  });
+
+  it("preserves secrets in the LIVE character (only the disk copy is stripped)", async () => {
+    const rt = makeUnseededRuntime();
+    // Simulate loadCharacter() having imported env credentials
+    rt.character.secrets = { TWITTER_TOKEN: "live-secret-a" };
+    rt.character.settings = {
+      secrets: { ANTHROPIC_API_KEY: "live-secret-b" },
+    };
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    // The runtime character KEEPS its secrets — they're needed for
+    // getSetting() fall-through. Stripping is a serialization concern only.
+    expect(
+      (rt.character.secrets as Record<string, unknown>).TWITTER_TOKEN,
+    ).toBe("live-secret-a");
+    expect(
+      (rt.character.settings as Record<string, Record<string, unknown>>).secrets
+        .ANTHROPIC_API_KEY,
+    ).toBe("live-secret-b");
+    // FFM block was added alongside, not in place of, the secrets
+    expect(
+      (rt.character.settings as Record<string, Record<string, unknown>>).ffm
+        .seed,
+    ).toBe(FAKE_SEED);
+  });
+
+  it("survives an FFM expansion failure without aborting the avatar pipeline", async () => {
+    const rt = makeUnseededRuntime();
+    // Make narrative blow up — simulates a parse error or timeout
+    rt.__ffm.startNarrativeExpansion = vi.fn(async () => {
+      throw new Error("scryptedai 503");
+    });
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    // Bootstrap failed but was caught — character unchanged
+    expect(rt.character.bio).toEqual([]);
+    expect((rt.character as Record<string, unknown>).settings).toBeUndefined();
+    // Avatar pipeline still triggered (thin character is still usable)
+    expect(rt.__tasks.size).toBe(1);
+    expect([...rt.__tasks.values()][0].name).toBe(WORKER_NAMES.TEXT_PHASE);
+    // Failure was logged
+    expect(rt.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Personality bootstrap failed"),
+    );
+  });
+
+  it("falls through softly when the FFM service is not loaded", async () => {
+    const rt = makeUnseededRuntime();
+    // Remove ffm from the service registry
+    const orig = rt.getServiceLoadPromise;
+    rt.getServiceLoadPromise = async (type: string) => {
+      if (type === "ffm") throw new Error("Service ffm not found");
+      return orig(type);
+    };
+
+    await AvbService.start(rt as never);
+    await flush();
+
+    expect(rt.__ffm.__calls.derive).toBe(0);
+    // Avatar pipeline still triggered
+    expect(rt.__tasks.size).toBe(1);
+  });
+
+  it("does not block start() — runtime is up before expansions resolve", async () => {
+    const rt = makeUnseededRuntime();
+
+    // Make awaitExpansion actually pend on a real timer so it can't
+    // resolve inside the same microtask burst as start().
+    let release!: () => void;
+    const pending = new Promise<void>((r) => {
+      release = r;
+    });
+    rt.__ffm.awaitExpansion = vi.fn(async (_jobId: string) => {
+      await pending;
+      return { kind: "narrative", ...rt.__ffm.__narrative };
+    });
+
+    // start() resolves WITHOUT the expansion having resolved.
+    const svc = await AvbService.start(rt as never);
+    expect(svc).toBeDefined();
+    expect(rt.__ffm.__calls.derive).toBe(0); // chain hasn't reached derive yet
+
+    // The fire-and-forget chain is running in the background. Releasing
+    // the gate lets it complete; the runtime was never blocked on it.
+    release();
+    await flush();
+    await flush(); // second burst for the voice call after narrative resolves
   });
 });

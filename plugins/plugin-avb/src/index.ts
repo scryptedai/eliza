@@ -37,7 +37,9 @@ export const avbPlugin: Plugin = {
   description:
     "Autonomous Virtual Being pipeline — character introspection → avatar " +
     "generation via db-persisted state machine. Calls scryptedai for actual generation.",
-  dependencies: ["scryptedai"],
+  // ffm before scryptedai is incidental — both are awaited via
+  // getServiceLoadPromise inside start(), so init order is handled there.
+  dependencies: ["scryptedai", "ffm"],
   services: [AvbService],
   actions: [generateAvatarAction],
 };
@@ -57,6 +59,8 @@ export {
   DEFAULT_IMAGE_METHOD,
   ENV_AVB_AUTOGEN_ON_BOOT,
   ENV_AVB_IMAGE_METHOD,
+  ENV_AVB_PERSIST_PERSONALITY,
+  FFM_EXPANSION_TIMEOUT_MS,
   PHASE_TICK_INTERVAL_MS,
   PIPELINE,
   tagForJob,
@@ -75,7 +79,7 @@ export {
   imagePromptSet,
 } from "./introspect.ts";
 // Service
-export { AvbService } from "./service.ts";
+export { AvbService, stripSecrets } from "./service.ts";
 
 // Types
 export type {

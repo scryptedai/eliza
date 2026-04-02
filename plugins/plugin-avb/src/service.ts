@@ -26,11 +26,23 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  type Character,
   type IAgentRuntime,
   Service,
+  saveCharacter,
   type Task,
   toScryptedPayload,
 } from "@elizaos/core";
+import {
+  FFM_SERVICE_TYPE,
+  type FfmProfile,
+  type FfmService,
+  hasFfmSeed,
+  type MergeableCharacter,
+  mergePersonality,
+  type NarrativeExpansion,
+  type VoiceExpansion,
+} from "@elizaos/plugin-ffm";
 import {
   type JobType,
   type NormalizedJobResult,
@@ -43,6 +55,8 @@ import {
   DEFAULT_IMAGE_METHOD,
   ENV_AVB_AUTOGEN_ON_BOOT,
   ENV_AVB_IMAGE_METHOD,
+  ENV_AVB_PERSIST_PERSONALITY,
+  FFM_EXPANSION_TIMEOUT_MS,
   PHASE_TICK_INTERVAL_MS,
   PIPELINE,
   tagForJob,
@@ -72,6 +86,92 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
 function isTerminal(status: string): boolean {
   return TERMINAL_STATUSES.has(status);
 }
+
+// ----------------------------------------------------------------------------
+// Internal: secret-stripping serialization guard
+// ----------------------------------------------------------------------------
+
+/**
+ * Structural surface for the secret-stripping pass. Both locations are
+ * defined in core: top-level `Character.secrets` (character.ts:32) and
+ * nested `CharacterSettings.secrets` (types/agent.ts:46). Anything that
+ * went through `loadCharacter()` has both potentially populated —
+ * `importSecretsFromEnv` pulls ANTHROPIC_API_KEY etc. into settings.secrets,
+ * and `ensureEncryptionSalt` adds ENCRYPTION_SALT.
+ */
+interface CharWithSecrets {
+  secrets?: unknown;
+  settings?: Record<string, unknown> & { secrets?: unknown };
+  [key: string]: unknown;
+}
+
+/**
+ * Return a serialization-safe copy of a character with both secret stores
+ * removed. Pure: never mutates the input. Used immediately before
+ * `saveCharacter()` so that env-imported credentials never reach disk.
+ *
+ * Why this lives in AVB rather than core: `saveCharacter()` is a generic
+ * writer that some callers DO want to persist secrets through (the original
+ * round-trip use case). AVB is the new caller introducing the new write,
+ * so AVB owns the new safety check.
+ */
+export function stripSecrets<T extends CharWithSecrets>(character: T): T {
+  // Top-level shallow clone, then drop the credential-bearing keys.
+  const { secrets: _topSecrets, settings, ...rest } = character;
+
+  // settings is a nested record — clone it before deleting so we don't
+  // mutate the live runtime character. If absent, leave it absent.
+  let safeSettings: typeof settings;
+  if (settings) {
+    const { secrets: _nestedSecrets, ...settingsRest } = settings;
+    safeSettings = settingsRest;
+  }
+
+  return {
+    ...rest,
+    ...(safeSettings !== undefined ? { settings: safeSettings } : {}),
+  } as T;
+}
+
+// ----------------------------------------------------------------------------
+// Internal: minimal FFM service surface (structural subset for the cast)
+// ----------------------------------------------------------------------------
+
+/**
+ * The slice of FfmService that ensurePersonality() actually calls.
+ * Declared locally so the test fake can satisfy it without importing
+ * the real service class. The real FfmService satisfies this structurally.
+ */
+interface FfmServiceLike {
+  deriveProfile(seed?: string): Promise<FfmProfile>;
+  startNarrativeExpansion(
+    profile: FfmProfile,
+    agentName: string,
+  ): Promise<{ jobId: string }>;
+  startVoiceExpansion(
+    profile: FfmProfile,
+    narrative: NarrativeExpansion,
+    agentName: string,
+  ): Promise<{ jobId: string }>;
+  awaitExpansion(
+    jobId: string,
+    timeoutMs?: number,
+  ): Promise<{ kind: "narrative" | "voice" }>;
+}
+
+// Compile-time check: a real FfmService must be assignable wherever we
+// expect FfmServiceLike. If FfmService's signatures drift, this line fails
+// the build here rather than in a runtime cast.
+const _ffmSurfaceCheck: Pick<
+  FfmService,
+  | "deriveProfile"
+  | "startNarrativeExpansion"
+  | "startVoiceExpansion"
+  | "awaitExpansion"
+> extends FfmServiceLike
+  ? true
+  : never = true;
+void _ffmSurfaceCheck;
 
 // ----------------------------------------------------------------------------
 // AvbService
@@ -233,6 +333,21 @@ export class AvbService extends Service {
       return;
     }
 
+    // Personality bootstrap runs BEFORE the avatar check. The avatar's
+    // image prompt is built from digestCharacter(), which reads bio/
+    // adjectives/topics — so we want those filled in first. We're already
+    // inside a fire-and-forget block (start() returned long ago), so the
+    // two awaitExpansion() calls below block this chain but never the
+    // runtime. Bootstrap failure logs and falls through to the avatar
+    // check — a thin character is still a usable character.
+    try {
+      await this.ensurePersonality();
+    } catch (err) {
+      this.rt.logger.warn(
+        `[avb] Personality bootstrap failed (continuing with current character): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     // Already delivered? Check the agent's identity room for a prior avatar.
     const roomId = this.rt.agentId;
     const memories = await this.rt.getMemories({
@@ -261,6 +376,148 @@ export class AvbService extends Service {
       `[avb] Auto-start: no avatar found — triggering createRun(room=${roomId})`,
     );
     await this.createRun(roomId);
+  }
+
+  // --------------------------------------------------------------------------
+  // Personality bootstrap (FFM)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Ensure the live character has an FFM-derived personality.
+   *
+   * Sufficiency check: a 64-hex seed in `character.settings.ffm.seed`. If
+   * present, the entire trait profile is deterministically re-derivable and
+   * we trust the rest of the sheet. If absent, we roll a fresh seed, run
+   * the two-call expansion (narrative → voice), and merge the result into
+   * `runtime.character` — without ever clobbering hand-authored fields.
+   *
+   * Async-safety: this method is only called from inside autoStartIfNeeded(),
+   * which is itself fire-and-forget relative to start(). The two
+   * awaitExpansion() calls below DO block this chain (they have to — voice
+   * consumes narrative's output) but the runtime is already up. Each
+   * expansion rides ScryptedAI's existing webhook+polling machinery via
+   * FfmService; no polling loops or timers live here.
+   *
+   * Disk-write safety: secrets are stripped before saveCharacter(). The
+   * live in-memory `runtime.character` keeps its secrets — only the disk
+   * copy is sanitized.
+   */
+  private async ensurePersonality(): Promise<void> {
+    const char = this.rt.character as MergeableCharacter;
+
+    if (hasFfmSeed(char)) {
+      this.rt.logger.debug(
+        "[avb] Personality bootstrap: FFM seed present — skipping",
+      );
+      return;
+    }
+
+    // Resolve the FFM service. Same load-promise dance as scryptedai; if
+    // the plugin isn't loaded, fail soft (the avatar pipeline still runs,
+    // just against whatever bio the character already had).
+    let ffm: FfmServiceLike;
+    try {
+      ffm = (await this.rt.getServiceLoadPromise(
+        FFM_SERVICE_TYPE,
+      )) as FfmServiceLike;
+    } catch (err) {
+      this.rt.logger.warn(
+        `[avb] Personality bootstrap: FFM service unavailable — skipping (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return;
+    }
+
+    const agentName = char.name ?? "Eliza";
+
+    // ----- Pure derivation (instant) ----------------------------------------
+    const profile = await ffm.deriveProfile();
+    this.rt.logger.info(
+      `[avb] Personality bootstrap: rolled ${profile.archetype.sloan} "${profile.archetype.label}" ` +
+        `(O=${profile.traits.O.toFixed(2)} C=${profile.traits.C.toFixed(2)} ` +
+        `E=${profile.traits.E.toFixed(2)} A=${profile.traits.A.toFixed(2)} ` +
+        `N=${profile.traits.N.toFixed(2)})`,
+    );
+
+    // ----- Expansion call #1: narrative (bio, beliefs, adjectives, topics) --
+    // startNarrativeExpansion fires the ScryptedAI text-gen and returns
+    // immediately with a jobId. awaitExpansion subscribes to FFM's terminal
+    // listener and resolves when scryptedai's webhook (or polling fallback)
+    // delivers the result. Same job-tracker pattern as ScryptedAIService.
+    const narrJob = await ffm.startNarrativeExpansion(profile, agentName);
+    const narrResult = await ffm.awaitExpansion(
+      narrJob.jobId,
+      FFM_EXPANSION_TIMEOUT_MS,
+    );
+    if (narrResult.kind !== "narrative") {
+      throw new Error(
+        `expected narrative expansion for job ${narrJob.jobId}, got ${narrResult.kind}`,
+      );
+    }
+    const narrative = narrResult as unknown as NarrativeExpansion;
+    this.rt.logger.info(
+      `[avb] Personality bootstrap: narrative ready (${narrative.bio.length} bio lines, ${narrative.topics.length} topics)`,
+    );
+
+    // ----- Expansion call #2: voice (dialogue, posts, style) ----------------
+    // Consumes narrative's output — the prompt splices bio and beliefs into
+    // {{BIO}}/{{BELIEFS}} tags so the voice is grounded in the backstory.
+    const voiceJob = await ffm.startVoiceExpansion(
+      profile,
+      narrative,
+      agentName,
+    );
+    const voiceResult = await ffm.awaitExpansion(
+      voiceJob.jobId,
+      FFM_EXPANSION_TIMEOUT_MS,
+    );
+    if (voiceResult.kind !== "voice") {
+      throw new Error(
+        `expected voice expansion for job ${voiceJob.jobId}, got ${voiceResult.kind}`,
+      );
+    }
+    const voice = voiceResult as unknown as VoiceExpansion;
+    this.rt.logger.info(
+      `[avb] Personality bootstrap: voice ready (${voice.messageExamples.length} exchanges, ${voice.postExamples.length} posts)`,
+    );
+
+    // ----- Merge into the live character ------------------------------------
+    // mergePersonality is preservative: hand-authored fields win. The
+    // settings.ffm block is always written (it's the seed of record).
+    // Object.assign mutates rt.character in place so digestCharacter() and
+    // anything else holding a reference sees the enriched version
+    // immediately.
+    const merged = mergePersonality(char, profile, narrative, voice);
+    Object.assign(this.rt.character, merged);
+
+    // ----- Persist (secret-stripped) ----------------------------------------
+    const persist = this.rt.getSetting(ENV_AVB_PERSIST_PERSONALITY);
+    if (persist === "false" || persist === "0" || persist === false) {
+      this.rt.logger.debug(
+        "[avb] Personality bootstrap: persistence disabled — in-memory only",
+      );
+      return;
+    }
+
+    // The live runtime character carries env-imported credentials
+    // (loadCharacter → importSecretsFromEnv → ANTHROPIC_API_KEY etc. land
+    // in settings.secrets; ensureEncryptionSalt adds ENCRYPTION_SALT). We
+    // strip both secret stores from the disk copy. The in-memory object is
+    // untouched — getSetting() fall-through to settings.secrets continues
+    // to work.
+    const safe = stripSecrets(this.rt.character);
+    try {
+      await saveCharacter(safe as unknown as Character);
+      this.rt.logger.info(
+        `[avb] Personality bootstrap: persisted to character.json (seed=${profile.seed.slice(0, 8)}…)`,
+      );
+    } catch (err) {
+      // No character.json discoverable, write permission denied, etc. —
+      // not fatal. The seed is still in memory; the agent has a personality
+      // for this session, it just won't survive restart.
+      this.rt.logger.warn(
+        `[avb] Personality bootstrap: saveCharacter failed — personality is in-memory only this session: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // --------------------------------------------------------------------------

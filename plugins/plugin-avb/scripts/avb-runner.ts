@@ -23,6 +23,7 @@ import {
   type Memory,
   type Task,
 } from "@elizaos/core";
+import { ffmPlugin } from "@elizaos/plugin-ffm";
 import { scryptedaiPlugin } from "@elizaos/plugin-scryptedai";
 import { type AvbPhaseMetadata, avbPlugin } from "../src/index.ts";
 
@@ -63,7 +64,11 @@ async function main() {
       ? "core default (no character file found)"
       : `${filePath}`,
   );
-  console.log("  plugins:  ", [scryptedaiPlugin.name, avbPlugin.name]);
+  console.log("  plugins:  ", [
+    scryptedaiPlugin.name,
+    ffmPlugin.name,
+    avbPlugin.name,
+  ]);
 
   // --- Preflight: scryptedai bearer token must be present in env ---
   // We do NOT inject it into the character. Instead, process.env is
@@ -81,7 +86,10 @@ async function main() {
   // its env fallback without modifying any character attributes.
   const runtime = new AgentRuntime({
     character,
-    plugins: [scryptedaiPlugin, avbPlugin],
+    // Order matters only for the dependencies graph; AVB awaits both
+    // scryptedai and ffm via getServiceLoadPromise inside start(), so the
+    // personality bootstrap runs after both providers are ready.
+    plugins: [scryptedaiPlugin, ffmPlugin, avbPlugin],
     settings: process.env as Record<string, string | undefined>,
     logLevel: "info",
   });
@@ -90,8 +98,9 @@ async function main() {
   console.log("✓ Runtime initialized (InMemoryDatabaseAdapter)");
 
   await runtime.getServiceLoadPromise("scryptedai");
+  await runtime.getServiceLoadPromise("ffm");
   await runtime.getServiceLoadPromise("avb");
-  console.log("✓ scryptedai + avb services available");
+  console.log("✓ scryptedai + ffm + avb services available");
   console.log(
     "✓ NOT calling createRun() — waiting for autonomous trigger...\n",
   );
