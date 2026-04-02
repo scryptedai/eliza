@@ -57,11 +57,7 @@ interface ImageResult {
 // ----------------------------------------------------------------------------
 
 function requireService(runtime: IAgentRuntime): ScryptedAIService {
-  const svc = (
-    runtime as {
-      getService: (type: string) => ScryptedAIService | undefined;
-    }
-  ).getService(SCRYPTEDAI_SERVICE_TYPE);
+  const svc = runtime.getService<ScryptedAIService>(SCRYPTEDAI_SERVICE_TYPE);
   if (!svc) {
     throw new Error(
       "ScryptedAI service not available. Ensure @elizaos/plugin-scryptedai " +
@@ -87,9 +83,7 @@ const IMAGE_MODEL_METHOD: Record<
 function resolveImageMethod(
   runtime: IAgentRuntime,
 ): Parameters<ScryptedAIService["startImageGeneration"]>[0] {
-  const raw = (runtime as { getSetting: (k: string) => unknown }).getSetting(
-    ENV_IMAGE_MODEL,
-  );
+  const raw = runtime.getSetting(ENV_IMAGE_MODEL);
   if (typeof raw === "string" && raw in IMAGE_MODEL_METHOD) {
     return IMAGE_MODEL_METHOD[raw as ImageModelName];
   }
@@ -148,6 +142,10 @@ export async function handleImage(
   };
   if (typeof params.count === "number" && params.count > 0) {
     inputData.num_images = params.count;
+  }
+  if (typeof params.size === "string" && params.size) {
+    // Pass-through; upstream endpoints that don't support `size` ignore it.
+    inputData.size = params.size;
   }
 
   const { jobId } = await svc.startImageGeneration(method, inputData);

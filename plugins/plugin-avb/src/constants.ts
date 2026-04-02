@@ -72,6 +72,15 @@ export const PIPELINE: Record<PhaseName, PhaseSpec> = {
 
 export const PHASE_TICK_INTERVAL_MS = 5_000;
 
+/**
+ * FIFO cap on AvbService.handledTasks (in-memory idempotency set guarding
+ * the eager-execute / TaskService-tick race). Each entry corresponds to one
+ * completed phase task. 256 entries comfortably exceeds any plausible race
+ * window (a few ticks × a handful of concurrent runs) while keeping the set
+ * bounded for long-lived agents.
+ */
+export const HANDLED_TASKS_CAP = 256;
+
 // ----------------------------------------------------------------------------
 // Environment variables
 // ----------------------------------------------------------------------------
@@ -86,5 +95,34 @@ export const ENV_AVB_IMAGE_METHOD = "AVB_IMAGE_METHOD";
  */
 export const ENV_AVB_AUTOGEN_ON_BOOT = "AVB_AUTOGEN_ON_BOOT";
 
+/**
+ * ScryptedAIService.startImageGeneration method names that AVB may select
+ * via AVB_IMAGE_METHOD. This list is type-checked against the scryptedai
+ * service signature (see ImageMethodName below) — adding an invalid name
+ * here is a compile error. If scryptedai adds a new image method and you
+ * want AVB to support it, add it to this array.
+ */
+export const IMAGE_METHODS = [
+  "invokeImageGeneration",
+  "invokeNanoBananaGeneration",
+  "invokeNanoBananaProGeneration",
+  "invokeNanoBananaEditGeneration",
+  "invokeNanoBananaProEditGeneration",
+  "invokeSeedream4Generation",
+  "invokeFlux2ProGeneration",
+  "invokeGrokImagineImageGeneration",
+] as const;
+
+/** Union of valid AVB_IMAGE_METHOD values. */
+export type ImageMethodName = (typeof IMAGE_METHODS)[number];
+
+/** Runtime check: is `value` a valid AVB_IMAGE_METHOD? */
+export function isImageMethodName(value: unknown): value is ImageMethodName {
+  return (
+    typeof value === "string" &&
+    (IMAGE_METHODS as readonly string[]).includes(value)
+  );
+}
+
 /** Default scryptedai client method for image generation (Seedream 4). */
-export const DEFAULT_IMAGE_METHOD = "invokeSeedream4Generation";
+export const DEFAULT_IMAGE_METHOD: ImageMethodName = "invokeSeedream4Generation";

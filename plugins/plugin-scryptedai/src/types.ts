@@ -96,6 +96,8 @@ export interface JobRecord {
   createdAt: number;
   /** epoch ms of last state update */
   updatedAt: number;
+  /** epoch ms when the job entered a terminal state; undefined while non-terminal */
+  terminalAt?: number;
   /** Normalized result once terminal; undefined while pending/processing */
   result?: NormalizedJobResult;
   /** Full server-side error message (not for end-user display) */

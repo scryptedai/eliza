@@ -1,28 +1,25 @@
 /**
  * Live proving test for the AVB pipeline — AUTONOMOUS mode.
  *
- * Boots ElizaOS with both plugins (scryptedai + avb). The AVB service
- * self-triggers avatar generation on boot (AVB_AUTOGEN_ON_BOOT default-on).
- * This script NEVER calls createRun() — it only boots the runtime and
- * observes. The pipeline fires itself.
+ * Boots ElizaOS with both plugins (scryptedai + avb) using an INLINE
+ * character whose `secrets` carry SCRYPTEDAI_BEARER_TOKEN. This exercises
+ * the character.secrets → runtime.getSetting() path specifically (vs.
+ * avb-runner.ts which exercises the env→settings path with a discovered
+ * character).
  *
- * Exercises the full autonomous path:
- *   AvbService.start() → autoStartIfNeeded() → createRun()
- *     → TEXT_PHASE task → IMAGE_PHASE task → DELIVER task → done
+ * The AVB service self-triggers avatar generation on boot
+ * (AVB_AUTOGEN_ON_BOOT default-on). This script NEVER calls createRun() —
+ * it only boots the runtime and observes. The pipeline fires itself.
  *
  * Run from plugin dir:
  *   bun --env-file=../../.env scripts/prove.ts
  *
  * To disable auto-start and drive manually, set AVB_AUTOGEN_ON_BOOT=false.
  */
-import {
-  AgentRuntime,
-  type Character,
-  type Memory,
-  type Task,
-} from "@elizaos/core";
+import { AgentRuntime, type Character } from "@elizaos/core";
 import { scryptedaiPlugin } from "@elizaos/plugin-scryptedai";
-import { type AvbPhaseMetadata, avbPlugin } from "../src/index.ts";
+import { avbPlugin } from "../src/index.ts";
+import { observeAvbPipeline, reportAvbResult } from "./_observe.ts";
 
 // ----------------------------------------------------------------------------
 // Character: default eliza agent (enough identity for a meaningful digest)
@@ -37,9 +34,9 @@ const character: Character = {
   ],
   adjectives: ["thoughtful", "precise", "warm", "analytical", "witty"],
   topics: ["software", "design", "systems", "philosophy"],
-  style: {
-    all: ["concise", "direct", "playful"],
-  },
+  // `style` omitted: StyleGuides is a protobuf message type requiring
+  // `$typeName`/create(); bio + adjectives + topics already give the
+  // digest enough identity for a proof run.
   system:
     "You are Eliza, a helpful AI agent. You think clearly, act carefully, and explain yourself well.",
   templates: {},
@@ -58,24 +55,6 @@ if (!character.secrets?.SCRYPTEDAI_BEARER_TOKEN) {
     "✗ SCRYPTEDAI_BEARER_TOKEN not set. Run with --env-file=../../.env",
   );
   process.exit(1);
-}
-
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function phaseOf(task: Task): string {
-  const md = task.metadata as unknown as AvbPhaseMetadata | undefined;
-  return md?.phase ?? "?";
-}
-
-function jobIdOf(task: Task): string {
-  const md = task.metadata as unknown as AvbPhaseMetadata | undefined;
-  return md?.scryptedJobId ?? "(pending)";
 }
 
 // ----------------------------------------------------------------------------
@@ -107,76 +86,8 @@ async function main() {
     "✓ NOT calling createRun() — waiting for autonomous trigger...\n",
   );
 
-  // --- Observe: poll for any AVB task in the agent's room ---
-  // We don't know the runId (the service generated it internally), so
-  // query by the base "avb" tag instead. When tasks disappear, the
-  // pipeline has reached terminal.
-  const roomId = runtime.agentId;
-  const start = Date.now();
-  const MAX_WAIT_MS = 6 * 60 * 1000; // text (90s) + image (360s) headroom
-  let lastPhase = "";
-  let sawAnyTask = false;
-
-  console.log("Observing pipeline progress (poll every 3s)...\n");
-  while (Date.now() - start < MAX_WAIT_MS) {
-    const tasks = await runtime.getTasks({ tags: ["avb"] });
-    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-
-    if (tasks.length === 0) {
-      if (sawAnyTask) {
-        console.log(
-          `  [${elapsed}s] no phase tasks remaining → pipeline terminal`,
-        );
-        break;
-      }
-      // No task yet — auto-start may still be settling (fire-and-forget).
-      console.log(`  [${elapsed}s] waiting for autonomous trigger...`);
-      await sleep(1000);
-      continue;
-    }
-
-    sawAnyTask = true;
-    const t = tasks[0];
-    const phase = phaseOf(t);
-    const jobId = jobIdOf(t);
-    if (phase !== lastPhase) {
-      console.log(`  [${elapsed}s] phase=${phase} job=${jobId}`);
-      lastPhase = phase;
-    } else {
-      console.log(`  [${elapsed}s] ${phase} (job=${jobId}, waiting...)`);
-    }
-
-    await sleep(3000);
-  }
-
-  // --- Fetch the delivered memory ---
-  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-  console.log("\n" + "─".repeat(60));
-
-  const memories = await runtime.getMemories({
-    roomId,
-    tableName: "messages",
-    count: 10,
-  });
-  const delivered = memories.find(
-    (m: Memory) =>
-      Array.isArray(m.content.actions) &&
-      m.content.actions.includes("GENERATE_AVATAR"),
-  );
-
-  if (!delivered) {
-    console.log(`✗ PIPELINE TIMED OUT after ${elapsed}s (no delivered memory)`);
-    process.exitCode = 1;
-  } else if (delivered.content.attachments?.[0]?.url) {
-    const url = delivered.content.attachments[0].url;
-    console.log(`✓ AVATAR GENERATED in ${elapsed}s`);
-    console.log("  imagePrompt:", JSON.stringify(delivered.content.text));
-    console.log("  imageUrl:   ", url);
-  } else {
-    console.log(`✗ PIPELINE FAILED after ${elapsed}s`);
-    console.log("  message:", delivered.content.text);
-    process.exitCode = 1;
-  }
+  const result = await observeAvbPipeline(runtime);
+  reportAvbResult(result);
 
   await runtime.stop();
   console.log("✓ Runtime stopped");

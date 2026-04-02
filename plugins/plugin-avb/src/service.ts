@@ -41,8 +41,12 @@ import {
   AVB_SERVICE_TYPE,
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
+  IMAGE_METHODS,
+  type ImageMethodName,
+  isImageMethodName,
   ENV_AVB_AUTOGEN_ON_BOOT,
   ENV_AVB_IMAGE_METHOD,
+  HANDLED_TASKS_CAP,
   PHASE_TICK_INTERVAL_MS,
   PIPELINE,
   tagForJob,
@@ -87,22 +91,53 @@ export class AvbService extends Service {
   /** Unsubscribe fn from scryptedai onTerminal hook. */
   private unsubscribeTerminal?: () => void;
 
-  /** Cached scryptedai image method name (resolved at start()). */
-  private imageMethod: string = DEFAULT_IMAGE_METHOD;
+  /** Cached scryptedai image method name (resolved + validated at start()). */
+  private imageMethod: ImageMethodName = DEFAULT_IMAGE_METHOD;
 
   /**
    * Task IDs that have already reached a terminal-report handler.
    * Protects against double-execution when the webhook fast-path
    * (eagerExecuteForJob) races with a TaskService tick.
    * In-memory only — the race itself is in-memory.
+   *
+   * Bounded FIFO: oldest entries are evicted past HANDLED_TASKS_CAP so a
+   * long-lived agent doesn't accumulate unbounded state. Eviction is safe
+   * because the underlying Task row is deleted on completion — once the
+   * row is gone the race can no longer recur for that taskId.
    */
   private readonly handledTasks = new Set<string>();
+
+  /** Add to handledTasks with FIFO eviction past HANDLED_TASKS_CAP. */
+  private markHandled(taskId: string): void {
+    this.handledTasks.add(taskId);
+    if (this.handledTasks.size > HANDLED_TASKS_CAP) {
+      const oldest = this.handledTasks.values().next().value;
+      if (oldest !== undefined) this.handledTasks.delete(oldest);
+    }
+  }
 
   /**
    * Runtime surface (structural cast of this.runtime).
    * Saved once in start() so workers and dispatch methods don't re-cast.
    */
   private rt!: AvbRuntimeSurface;
+
+  /**
+   * Phase workers, built once in start(). Both registerTaskWorker (for the
+   * core TaskService tick path) and the webhook fast-path (eagerExecuteForJob)
+   * use the same instances — no per-tick allocation.
+   */
+  private workers!: Record<
+    PhaseName,
+    {
+      name: string;
+      execute: (
+        rt: unknown,
+        opts: Record<string, unknown>,
+        t: Task,
+      ) => Promise<void>;
+    }
+  >;
 
   // --------------------------------------------------------------------------
   // Service lifecycle
@@ -112,16 +147,30 @@ export class AvbService extends Service {
     const svc = new AvbService(runtime);
     svc.rt = runtime as unknown as AvbRuntimeSurface;
 
-    // Resolve image method once
+    // Resolve image method once. Validate against the allow-list so an
+    // env typo fails loudly at boot instead of opaquely at first IMAGE_PHASE.
     const envMethod = svc.rt.getSetting(ENV_AVB_IMAGE_METHOD);
     if (typeof envMethod === "string" && envMethod) {
-      svc.imageMethod = envMethod;
+      if (isImageMethodName(envMethod)) {
+        svc.imageMethod = envMethod;
+      } else {
+        svc.rt.logger.warn(
+          `[avb] ${ENV_AVB_IMAGE_METHOD}="${envMethod}" is not a recognized ` +
+            `ScryptedAI image method. Falling back to ${DEFAULT_IMAGE_METHOD}. ` +
+            `Valid values: ${IMAGE_METHODS.join(", ")}`,
+        );
+      }
     }
 
-    // Register phase workers
-    svc.rt.registerTaskWorker(svc.buildTextPhaseWorker());
-    svc.rt.registerTaskWorker(svc.buildImagePhaseWorker());
-    svc.rt.registerTaskWorker(svc.buildDeliverWorker());
+    // Build + register phase workers (cached for fast-path reuse)
+    svc.workers = {
+      TEXT_PHASE: svc.buildTextPhaseWorker(),
+      IMAGE_PHASE: svc.buildImagePhaseWorker(),
+      DELIVER: svc.buildDeliverWorker(),
+    };
+    for (const w of Object.values(svc.workers)) {
+      svc.rt.registerTaskWorker(w);
+    }
 
     // Hook scryptedai terminal events for webhook fast-path.
     // Service init order isn't guaranteed (avb may start before scryptedai
@@ -281,7 +330,7 @@ export class AvbService extends Service {
     // Idempotency guard: eager-execute + TaskService tick can both reach
     // terminal on the same task. First one wins; subsequent calls no-op.
     if (this.handledTasks.has(taskId)) return;
-    this.handledTasks.add(taskId);
+    this.markHandled(taskId);
 
     const spec = PIPELINE[phase];
 
@@ -304,7 +353,7 @@ export class AvbService extends Service {
     const { phase, taskId, ctx, error } = report;
 
     if (this.handledTasks.has(taskId)) return;
-    this.handledTasks.add(taskId);
+    this.markHandled(taskId);
 
     this.rt.logger.warn(
       `[avb] Phase ${phase} failed (run=${ctx.runId}): ${error}`,
@@ -366,7 +415,7 @@ export class AvbService extends Service {
       const md = task.metadata as unknown as AvbPhaseMetadata | undefined;
       if (!md?.phase) continue;
 
-      const worker = this.workerForPhase(md.phase);
+      const worker = this.workers[md.phase];
       if (!worker) continue;
 
       this.rt.logger.debug(
@@ -375,25 +424,6 @@ export class AvbService extends Service {
       // Pass the terminal result through options so the worker can skip
       // a redundant fetchJobStatus() round-trip.
       await worker.execute(this.runtime, { terminalHint: result }, task);
-    }
-  }
-
-  private workerForPhase(phase: PhaseName):
-    | {
-        execute: (
-          rt: unknown,
-          opts: Record<string, unknown>,
-          t: Task,
-        ) => Promise<void>;
-      }
-    | undefined {
-    switch (phase) {
-      case "TEXT_PHASE":
-        return this.buildTextPhaseWorker();
-      case "IMAGE_PHASE":
-        return this.buildImagePhaseWorker();
-      case "DELIVER":
-        return this.buildDeliverWorker();
     }
   }
 
@@ -467,9 +497,7 @@ export class AvbService extends Service {
               );
             }
             const { jobId } = await scrypted.startImageGeneration(
-              svc.imageMethod as Parameters<
-                ScryptedAIService["startImageGeneration"]
-              >[0],
+              svc.imageMethod,
               { prompt: ctx.imagePrompt, num_images: 1 },
             );
             return jobId;

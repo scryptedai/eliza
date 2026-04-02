@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
+  IMAGE_METHODS,
+  isImageMethodName,
   PIPELINE,
   tagForJob,
   tagForRun,
@@ -41,6 +43,30 @@ describe("constants: PIPELINE graph", () => {
 describe("constants: image method default", () => {
   it("defaults to Seedream 4", () => {
     expect(DEFAULT_IMAGE_METHOD).toBe("invokeSeedream4Generation");
+  });
+
+  it("default is in the allow-list", () => {
+    expect(IMAGE_METHODS).toContain(DEFAULT_IMAGE_METHOD);
+  });
+});
+
+describe("constants: isImageMethodName", () => {
+  it("accepts every entry in IMAGE_METHODS", () => {
+    for (const m of IMAGE_METHODS) {
+      expect(isImageMethodName(m)).toBe(true);
+    }
+  });
+
+  it("rejects typos and unknown values", () => {
+    expect(isImageMethodName("invokeSeadream4Generation")).toBe(false);
+    expect(isImageMethodName("invokeBogus")).toBe(false);
+    expect(isImageMethodName("")).toBe(false);
+  });
+
+  it("rejects non-string input", () => {
+    expect(isImageMethodName(undefined)).toBe(false);
+    expect(isImageMethodName(null)).toBe(false);
+    expect(isImageMethodName(123)).toBe(false);
   });
 });
 

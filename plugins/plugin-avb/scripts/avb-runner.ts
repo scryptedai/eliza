@@ -17,32 +17,10 @@
  * Opt-out of auto-gen: AVB_AUTOGEN_ON_BOOT=false
  * Override character:  place a character.{ts,json} in cwd
  */
-import {
-  AgentRuntime,
-  loadCharacter,
-  type Memory,
-  type Task,
-} from "@elizaos/core";
+import { AgentRuntime, loadCharacter } from "@elizaos/core";
 import { scryptedaiPlugin } from "@elizaos/plugin-scryptedai";
-import { type AvbPhaseMetadata, avbPlugin } from "../src/index.ts";
-
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function phaseOf(task: Task): string {
-  const md = task.metadata as unknown as AvbPhaseMetadata | undefined;
-  return md?.phase ?? "?";
-}
-
-function jobIdOf(task: Task): string {
-  const md = task.metadata as unknown as AvbPhaseMetadata | undefined;
-  return md?.scryptedJobId ?? "(pending)";
-}
+import { avbPlugin } from "../src/index.ts";
+import { observeAvbPipeline, reportAvbResult } from "./_observe.ts";
 
 // ----------------------------------------------------------------------------
 // Main
@@ -59,9 +37,7 @@ async function main() {
   console.log("  character:", character.name);
   console.log(
     "  source:   ",
-    fromDefault
-      ? "core default (no character file found)"
-      : `${filePath}`,
+    fromDefault ? "core default (no character file found)" : `${filePath}`,
   );
   console.log("  plugins:  ", [scryptedaiPlugin.name, avbPlugin.name]);
 
@@ -96,73 +72,10 @@ async function main() {
     "✓ NOT calling createRun() — waiting for autonomous trigger...\n",
   );
 
-  // --- Observe: poll by base "avb" tag (runId is internal to the service) ---
-  const roomId = runtime.agentId;
-  const start = Date.now();
-  const MAX_WAIT_MS = 6 * 60 * 1000;
-  let lastPhase = "";
-  let sawAnyTask = false;
-
-  console.log("Observing pipeline progress (poll every 3s)...\n");
-  while (Date.now() - start < MAX_WAIT_MS) {
-    const tasks = await runtime.getTasks({ tags: ["avb"] });
-    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-
-    if (tasks.length === 0) {
-      if (sawAnyTask) {
-        console.log(
-          `  [${elapsed}s] no phase tasks remaining → pipeline terminal`,
-        );
-        break;
-      }
-      console.log(`  [${elapsed}s] waiting for autonomous trigger...`);
-      await sleep(1000);
-      continue;
-    }
-
-    sawAnyTask = true;
-    const t = tasks[0];
-    const phase = phaseOf(t);
-    const jobId = jobIdOf(t);
-    if (phase !== lastPhase) {
-      console.log(`  [${elapsed}s] phase=${phase} job=${jobId}`);
-      lastPhase = phase;
-    } else {
-      console.log(`  [${elapsed}s] ${phase} (job=${jobId}, waiting...)`);
-    }
-
-    await sleep(3000);
-  }
-
-  // --- Fetch result ---
-  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-  console.log("\n" + "─".repeat(60));
-
-  const memories = await runtime.getMemories({
-    roomId,
-    tableName: "messages",
-    count: 10,
-  });
-  const delivered = memories.find(
-    (m: Memory) =>
-      Array.isArray(m.content.actions) &&
-      m.content.actions.includes("GENERATE_AVATAR"),
-  );
-
-  if (!delivered) {
-    console.log(`✗ PIPELINE TIMED OUT after ${elapsed}s (no delivered memory)`);
-    process.exitCode = 1;
-  } else if (delivered.content.attachments?.[0]?.url) {
-    const url = delivered.content.attachments[0].url;
-    console.log(`✓ AVATAR GENERATED in ${elapsed}s`);
-    console.log("  character: ", character.name, fromDefault ? "(default)" : "");
-    console.log("  imagePrompt:", JSON.stringify(delivered.content.text));
-    console.log("  imageUrl:   ", url);
-  } else {
-    console.log(`✗ PIPELINE FAILED after ${elapsed}s`);
-    console.log("  message:", delivered.content.text);
-    process.exitCode = 1;
-  }
+  const result = await observeAvbPipeline(runtime);
+  reportAvbResult(result, [
+    `  character:  ${character.name}${fromDefault ? " (default)" : ""}`,
+  ]);
 
   await runtime.stop();
   console.log("✓ Runtime stopped");

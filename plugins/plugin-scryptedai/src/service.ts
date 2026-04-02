@@ -14,7 +14,16 @@
  *   It checks the (jobId, status) pair against a processed-Set before acting,
  *   so duplicate webhook deliveries and webhook/poll races are both safe.
  *
- * Limitations (V1):
+ * Memory bounds:
+ * - Concurrent non-terminal jobs are soft-capped at MAX_INFLIGHT_JOBS.
+ *   start*() calls await a free slot when at the cap (backpressure).
+ *   We do NOT spill deferred requests to a disk queue here — see the
+ *   rationale in constants.ts: callers that need durability persist their
+ *   intent in the ElizaOS runtime task DB and retry idempotently.
+ * - Terminal job records are evicted after TERMINAL_RETENTION_MS via a
+ *   periodic sweep, so the store cannot grow without bound.
+ *
+ * Limitations:
  * - Job store is in-memory; lost on restart. Callers can recover by
  *   invoking getJobStatus(jobId) manually for any job IDs they persisted.
  */
@@ -27,8 +36,11 @@ import {
   ENV_BASE_URL,
   ENV_BEARER_TOKEN,
   ENV_WEBHOOK_SECRET,
+  EVICTION_SWEEP_INTERVAL_MS,
   type JobType,
+  MAX_INFLIGHT_JOBS,
   SCRYPTEDAI_SERVICE_TYPE,
+  TERMINAL_RETENTION_MS,
 } from "./constants.ts";
 import { pollJobToCompletion } from "./polling.ts";
 import type {
@@ -76,6 +88,18 @@ export class ScryptedAIService extends Service {
   /** Active polling AbortControllers by jobId (for cancellation on stop). */
   private readonly activePolls = new Map<string, AbortController>();
 
+  /** Count of currently-held in-flight slots (≤ MAX_INFLIGHT_JOBS, soft). */
+  private inflight = 0;
+
+  /** Resolvers for callers awaiting an in-flight slot (FIFO). */
+  private readonly slotWaiters: Array<() => void> = [];
+
+  /** jobIds that currently hold an in-flight slot (released on terminal). */
+  private readonly heldSlots = new Set<string>();
+
+  /** Periodic eviction sweep handle. */
+  private evictionTimer?: ReturnType<typeof setInterval>;
+
   // --------------------------------------------------------------------------
   // Service lifecycle
   // --------------------------------------------------------------------------
@@ -101,15 +125,31 @@ export class ScryptedAIService extends Service {
       svc.defaultWebhookSecret = secret;
     }
 
+    // Periodic eviction of terminal job records keeps the store bounded.
+    // .unref() so this timer alone doesn't keep the Node process alive.
+    svc.evictionTimer = setInterval(
+      () => svc.pruneTerminalJobs(),
+      EVICTION_SWEEP_INTERVAL_MS,
+    );
+    svc.evictionTimer.unref?.();
+
     runtime.logger.info(
       "[scryptedai] Service started (webhooks=" +
         (svc.defaultWebhookSecret ? "configured" : "not-configured") +
-        ")",
+        `, inflight-cap=${MAX_INFLIGHT_JOBS})`,
     );
     return svc;
   }
 
   async stop(): Promise<void> {
+    if (this.evictionTimer) {
+      clearInterval(this.evictionTimer);
+      this.evictionTimer = undefined;
+    }
+    // Release any callers awaiting a slot so they don't hang forever.
+    while (this.slotWaiters.length > 0) {
+      this.slotWaiters.shift()?.();
+    }
     // Abort all active polls
     for (const [jobId, controller] of this.activePolls.entries()) {
       controller.abort();
@@ -183,6 +223,69 @@ export class ScryptedAIService extends Service {
     return [...this.jobs.values()];
   }
 
+  /** Number of currently-held in-flight slots (for observability/tests). */
+  inflightCount(): number {
+    return this.inflight;
+  }
+
+  /**
+   * Evict terminal job records older than `maxAgeMs` (default: configured
+   * retention window) and prune their `processed` keys. Returns count evicted.
+   * Called periodically by the eviction sweep; also callable directly.
+   */
+  pruneTerminalJobs(maxAgeMs: number = TERMINAL_RETENTION_MS): number {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [jobId, record] of this.jobs) {
+      if (
+        record.terminalAt !== undefined &&
+        now - record.terminalAt > maxAgeMs
+      ) {
+        this.jobs.delete(jobId);
+        const prefix = `${jobId}:`;
+        for (const key of this.processed) {
+          if (key.startsWith(prefix)) this.processed.delete(key);
+        }
+        evicted++;
+      }
+    }
+    if (evicted > 0) {
+      this.runtime.logger.debug(
+        `[scryptedai] Evicted ${evicted} terminal job record(s) from store`,
+      );
+    }
+    return evicted;
+  }
+
+  // --------------------------------------------------------------------------
+  // In-flight slot management (backpressure)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Reserve an in-flight slot. Resolves immediately if below the cap;
+   * otherwise enqueues the caller FIFO and resolves when a slot frees
+   * (i.e., when a tracked job goes terminal). Soft limit: see constants.ts
+   * for why deferred requests are NOT spilled to disk at this layer.
+   */
+  private async acquireSlot(): Promise<void> {
+    if (this.inflight < MAX_INFLIGHT_JOBS) {
+      this.inflight++;
+      return;
+    }
+    this.runtime.logger.debug(
+      `[scryptedai] In-flight cap (${MAX_INFLIGHT_JOBS}) reached; awaiting slot`,
+    );
+    await new Promise<void>((resolve) => this.slotWaiters.push(resolve));
+    this.inflight++;
+  }
+
+  /** Release an in-flight slot and wake the next waiter (if any). */
+  private releaseSlot(): void {
+    if (this.inflight > 0) this.inflight--;
+    const next = this.slotWaiters.shift();
+    if (next) next();
+  }
+
   /** Poll the API for a job's current status and normalize it. Does NOT mutate store. */
   async fetchJobStatus(jobId: string): Promise<NormalizedJobResult> {
     const raw = await this.client.getJobStatus(jobId);
@@ -242,7 +345,14 @@ export class ScryptedAIService extends Service {
       record.result = normalized;
       record.rawError = normalized.error;
       record.polling = false;
+      record.terminalAt = now;
       this.processed.add(key);
+
+      // Free the in-flight slot this job was holding (if it was started
+      // via a start*() helper; webhook-only / resumePolling jobs hold none).
+      if (this.heldSlots.delete(jobId)) {
+        this.releaseSlot();
+      }
 
       // Stop any active poller for this job
       const ctrl = this.activePolls.get(jobId);
@@ -412,7 +522,44 @@ export class ScryptedAIService extends Service {
   // store, and starts a polling fallback unless the caller provides a
   // webhook URL (in which case polling is optional — controlled by the
   // `pollFallback` flag, default true as a safety net).
+  //
+  // All start*() helpers are gated by the in-flight semaphore: when
+  // MAX_INFLIGHT_JOBS non-terminal jobs are already tracked, the call
+  // awaits a free slot before invoking the upstream API. The slot is
+  // released when the job reaches a terminal state (processTerminal),
+  // or immediately if the invoke itself throws.
   // --------------------------------------------------------------------------
+
+  /**
+   * Acquire a slot, run `invoke()` to obtain a RecipeExecutionResponse,
+   * mark the resulting jobId as holding the slot, then track it.
+   *
+   * heldSlots.add() must happen BEFORE trackJob() because trackJob may
+   * synchronously call processTerminal() (fast-completing job), which
+   * needs to find and release the held slot.
+   */
+  private async startTracked(
+    invoke: () => Promise<RecipeExecutionResponse>,
+    jobType: JobType,
+    track: { pollFallback: boolean; metadata?: Record<string, unknown> },
+  ): Promise<StartJobResult> {
+    await this.acquireSlot();
+    let jobId: string | undefined;
+    try {
+      const response = await invoke();
+      jobId = response.job_id;
+      this.heldSlots.add(jobId);
+      const record = this.trackJob(response, jobType, track);
+      return { jobId, response, record };
+    } catch (err) {
+      // Invoke failed (or trackJob threw) before the job could reach
+      // processTerminal — release the slot we acquired.
+      if (jobId === undefined || this.heldSlots.delete(jobId)) {
+        this.releaseSlot();
+      }
+      throw err;
+    }
+  }
 
   async startRecipe(
     recipeId: string,
@@ -424,12 +571,11 @@ export class ScryptedAIService extends Service {
     },
   ): Promise<StartJobResult> {
     const inv = this.resolveInvokeOptions(opts);
-    const response = await this.client.invokeRecipe(recipeId, inputData, inv);
-    const record = this.trackJob(response, opts?.jobType ?? "unknown", {
-      pollFallback: opts?.pollFallback ?? true,
-      metadata: opts?.metadata,
-    });
-    return { jobId: response.job_id, response, record };
+    return this.startTracked(
+      () => this.client.invokeRecipe(recipeId, inputData, inv),
+      opts?.jobType ?? "unknown",
+      { pollFallback: opts?.pollFallback ?? true, metadata: opts?.metadata },
+    );
   }
 
   async startImageGeneration(
@@ -449,12 +595,11 @@ export class ScryptedAIService extends Service {
     },
   ): Promise<StartJobResult> {
     const inv = this.resolveInvokeOptions(opts);
-    const response = await this.client[methodName](inputData, inv);
-    const record = this.trackJob(response, "image", {
-      pollFallback: opts?.pollFallback ?? true,
-      metadata: opts?.metadata,
-    });
-    return { jobId: response.job_id, response, record };
+    return this.startTracked(
+      () => this.client[methodName](inputData, inv),
+      "image",
+      { pollFallback: opts?.pollFallback ?? true, metadata: opts?.metadata },
+    );
   }
 
   async startVideoGeneration(
@@ -475,12 +620,11 @@ export class ScryptedAIService extends Service {
     },
   ): Promise<StartJobResult> {
     const inv = this.resolveInvokeOptions(opts);
-    const response = await this.client[methodName](inputData, inv);
-    const record = this.trackJob(response, "video", {
-      pollFallback: opts?.pollFallback ?? true,
-      metadata: opts?.metadata,
-    });
-    return { jobId: response.job_id, response, record };
+    return this.startTracked(
+      () => this.client[methodName](inputData, inv),
+      "video",
+      { pollFallback: opts?.pollFallback ?? true, metadata: opts?.metadata },
+    );
   }
 
   async startTextGeneration(
@@ -491,11 +635,10 @@ export class ScryptedAIService extends Service {
     },
   ): Promise<StartJobResult> {
     const inv = this.resolveInvokeOptions(opts);
-    const response = await this.client.invokeTextGeneration(inputData, inv);
-    const record = this.trackJob(response, "text", {
-      pollFallback: opts?.pollFallback ?? true,
-      metadata: opts?.metadata,
-    });
-    return { jobId: response.job_id, response, record };
+    return this.startTracked(
+      () => this.client.invokeTextGeneration(inputData, inv),
+      "text",
+      { pollFallback: opts?.pollFallback ?? true, metadata: opts?.metadata },
+    );
   }
 }

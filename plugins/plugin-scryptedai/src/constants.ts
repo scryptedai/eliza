@@ -121,6 +121,35 @@ export const POLLING_WINDOWS: Record<JobType, PollingWindow> = {
 export const TRANSIENT_GATEWAY_STATUS = new Set([502, 503, 504]);
 
 // ----------------------------------------------------------------------------
+// Job-store memory bounds (service.ts)
+//
+// The service tracks jobs in-memory. Two mechanisms keep it bounded:
+//
+// 1. MAX_INFLIGHT_JOBS — soft cap on concurrent non-terminal jobs. start*()
+//    calls await a free slot when at the cap. We deliberately do NOT spill
+//    deferred requests to disk here: callers that need durability (e.g.
+//    plugin-avb) already persist their intent in the ElizaOS runtime task DB
+//    via runtime.createTask(), and their idempotent workers retry on the
+//    next tick. Adding a second disk queue inside this service would create
+//    two sources of truth for "pending work". Backpressure at this layer +
+//    durable retry at the caller layer is the correct separation.
+//
+// 2. TERMINAL_RETENTION_MS — terminal job records (and their processed-Set
+//    keys) are evicted after this grace window. The window is long enough
+//    for any awaitJob()/getJob()/onTerminal consumer to observe the result,
+//    but short enough that a busy agent doesn't accumulate unbounded state.
+// ----------------------------------------------------------------------------
+
+/** Soft cap on concurrent non-terminal jobs tracked by the service. */
+export const MAX_INFLIGHT_JOBS = 64;
+
+/** How long a terminal job record remains queryable before eviction (ms). */
+export const TERMINAL_RETENTION_MS = 5 * 60_000;
+
+/** Interval between terminal-job eviction sweeps (ms). */
+export const EVICTION_SWEEP_INTERVAL_MS = 60_000;
+
+// ----------------------------------------------------------------------------
 // Plugin service / route identity
 // ----------------------------------------------------------------------------
 

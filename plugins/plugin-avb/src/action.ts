@@ -18,24 +18,6 @@ import { AVB_SERVICE_TYPE } from "./constants.ts";
 import type { AvbService } from "./service.ts";
 
 // ----------------------------------------------------------------------------
-// Internal: typed service lookup (mirrors the runtime surface cast pattern)
-// ----------------------------------------------------------------------------
-
-function getAvb(runtime: IAgentRuntime): AvbService | undefined {
-  return (
-    runtime as unknown as { getService<T>(type: string): T | undefined }
-  ).getService<AvbService>(AVB_SERVICE_TYPE);
-}
-
-function hasScrypted(runtime: IAgentRuntime): boolean {
-  return (
-    (
-      runtime as unknown as { getService(type: string): unknown | undefined }
-    ).getService(SCRYPTEDAI_SERVICE_TYPE) !== undefined
-  );
-}
-
-// ----------------------------------------------------------------------------
 // Action
 // ----------------------------------------------------------------------------
 
@@ -89,14 +71,17 @@ export const generateAvatarAction: Action = {
    * dependency isn't configured.
    */
   validate: async (runtime: IAgentRuntime): Promise<boolean> => {
-    return getAvb(runtime) !== undefined && hasScrypted(runtime);
+    return (
+      runtime.getService<AvbService>(AVB_SERVICE_TYPE) !== null &&
+      runtime.getService(SCRYPTEDAI_SERVICE_TYPE) !== null
+    );
   },
 
   handler: async (
     runtime: IAgentRuntime,
     message: Memory,
   ): Promise<ActionResult> => {
-    const avb = getAvb(runtime);
+    const avb = runtime.getService<AvbService>(AVB_SERVICE_TYPE);
     if (!avb) {
       return {
         success: false,
