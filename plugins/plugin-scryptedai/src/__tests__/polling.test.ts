@@ -7,6 +7,12 @@ import type { JobStatusResponse } from "../types.ts";
 // Test seam: a hand-built object matching the structural surface
 // pollJobToCompletion consumes. No vi.mock() — @elizaos/core resolves to
 // real source via tsconfig paths. Do not add __mocks__/.
+//
+// RUNNER NOTE: this plugin's tests use vitest (`bun run test`), NOT bun's
+// native runner (`bun test`). The two are different binaries — `bun test`
+// has no vi.runAllTimersAsync(), and these tests will hang or throw under it.
+// plugin-avb happens to work under either because it avoids vitest-only APIs;
+// this plugin does not. Use the package.json script.
 function mockClient(
   responses: Array<JobStatusResponse | Error>,
 ): ScryptedClient {
