@@ -119,8 +119,10 @@ export interface AvbRuntimeSurface {
     bio?: string[] | string;
     topics?: string[];
     adjectives?: string[];
+    postExamples?: string[];
     system?: string;
     style?: { all?: string[]; chat?: string[]; post?: string[] };
+    settings?: Record<string, unknown>;
   };
   logger: {
     info: (msg: string) => void;

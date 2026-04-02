@@ -86,5 +86,12 @@ export const ENV_AVB_IMAGE_METHOD = "AVB_IMAGE_METHOD";
  */
 export const ENV_AVB_AUTOGEN_ON_BOOT = "AVB_AUTOGEN_ON_BOOT";
 
+/**
+ * Optional fixed FFM seed (64-char hex). When set, the AVB's Five-Factor
+ * personality is derived from this seed instead of a fresh random one,
+ * making the agent's personality reproducible across runs/hosts.
+ */
+export const ENV_AVB_FFM_SEED = "AVB_FFM_SEED";
+
 /** Default scryptedai client method for image generation (Seedream 4). */
 export const DEFAULT_IMAGE_METHOD = "invokeSeedream4Generation";

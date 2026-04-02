@@ -4,9 +4,9 @@
   "models": {
     "amazon.nova-pro-v1:0": {
       "maxInputTokens": 300000,
-      "maxOutputTokens": 10000,
+      "maxOutputTokens": 9000,
       "provider": "aws-bedrock",
-      "notes": "docs.aws.amazon.com/nova/latest/userguide/what-is-nova.html"
+      "notes": "docs.aws.amazon.com/nova/latest/userguide/what-is-nova.html — ScryptedAI /generations/text/nova-pro: MUST send auto_calculate_tokens:false AND explicit max_tokens; the recipe's auto-calc (default true) pins output to 100 tokens regardless of request, and with auto-calc disabled there is no server-side default. 9000 is the working upper bound (verified live 2026-04)."
     },
     "amazon.nova-lite-v1:0": {
       "maxInputTokens": 300000,

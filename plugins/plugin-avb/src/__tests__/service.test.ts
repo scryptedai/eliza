@@ -7,7 +7,7 @@
  * and pipeline transitions.
  */
 
-import { getModelLimits, type Task } from "@elizaos/core";
+import type { Task } from "@elizaos/core";
 import type {
   JobRecord,
   JobTerminalListener,
@@ -15,7 +15,6 @@ import type {
 } from "@elizaos/plugin-scryptedai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tagForJob, tagForRun, WORKER_NAMES } from "../constants.ts";
-import { IMAGE_PROMPT_MODEL } from "../introspect.ts";
 import { AvbService } from "../service.ts";
 import type { AvbPhaseMetadata } from "../types.ts";
 
@@ -182,6 +181,10 @@ function makeFakeRuntime(settings: Record<string, unknown> = {}): FakeRuntime {
       bio: ["A test agent for unit testing."],
       adjectives: ["precise", "deterministic"],
       topics: ["testing", "validation"],
+      // Pre-seed FFM so bootstrapFfmPersonality() is a no-op in unit tests
+      // (otherwise it would call startTextGeneration during start() and
+      // skew per-test call-count assertions).
+      settings: { AVB_FFM_SEED: "00".repeat(32) },
     },
     logger: {
       info: vi.fn(),
@@ -447,11 +450,11 @@ describe("TEXT_PHASE worker: idempotent lifecycle", () => {
     expect(typeof payload.user_prompt).toBe("string");
     expect(payload.system_prompt).toContain("visual prompt engineer");
     expect(payload.user_prompt).toContain("TestAgent");
-    // max_tokens comes from the model registry via IMAGE_PROMPT_MODEL —
-    // no hardcoded numbers; if the registry changes this test stays valid.
-    expect(payload.max_tokens).toBe(
-      getModelLimits(IMAGE_PROMPT_MODEL).maxOutputTokens,
-    );
+    // Server-side auto-calc pins output to 100 tokens; must be disabled
+    // with an explicit ceiling so the model can finish (verified live).
+    expect(payload.auto_calculate_tokens).toBe(false);
+    expect(typeof payload.max_tokens).toBe("number");
+    expect(payload.max_tokens as number).toBeGreaterThan(100);
     // System and user are distinct (PromptSet keeps them separate)
     expect(payload.system_prompt).not.toContain("TestAgent");
 

@@ -26,7 +26,10 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  type Character,
+  findCharacterFile,
   type IAgentRuntime,
+  saveCharacter,
   Service,
   type Task,
   toScryptedPayload,
@@ -42,6 +45,7 @@ import {
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
   ENV_AVB_AUTOGEN_ON_BOOT,
+  ENV_AVB_FFM_SEED,
   ENV_AVB_IMAGE_METHOD,
   PHASE_TICK_INTERVAL_MS,
   PIPELINE,
@@ -49,6 +53,16 @@ import {
   tagForRun,
   WORKER_NAMES,
 } from "./constants.ts";
+import {
+  buildFfmCharacter,
+  createFfmSeed,
+  deriveFfmProfile,
+  expandFfmToCharacterFields,
+  FFM_SEED_SETTING,
+  formatFfmScores,
+  normalizeFfmSeed,
+  stripCharacterSecrets,
+} from "./ffm.ts";
 import { digestCharacter, imagePromptSet } from "./introspect.ts";
 import type {
   AvbPhaseMetadata,
@@ -149,13 +163,27 @@ export class AvbService extends Service {
       `[avb] Service started (image method=${svc.imageMethod})`,
     );
 
-    // Autonomous trigger: generate an avatar on boot if one doesn't exist.
-    // Fire-and-forget so we don't block service startup.
-    void svc.autoStartIfNeeded().catch((err) => {
-      svc.rt.logger.warn(
-        `[avb] Auto-start check failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    });
+    // Autonomous boot sequence (fire-and-forget so service startup returns):
+    //   1. Bootstrap FFM personality — enrich/persist character.json with
+    //      seed-derived OCEAN profile if not already present.
+    //   2. Then auto-start avatar generation, so the image pipeline's
+    //      digestCharacter() sees the enriched bio/style/adjectives.
+    void (async () => {
+      try {
+        await svc.bootstrapFfmPersonality();
+      } catch (err) {
+        svc.rt.logger.warn(
+          `[avb] FFM bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      try {
+        await svc.autoStartIfNeeded();
+      } catch (err) {
+        svc.rt.logger.warn(
+          `[avb] Auto-start check failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    })();
 
     return svc;
   }
@@ -200,6 +228,80 @@ export class AvbService extends Service {
    */
   async getRunTasks(runId: string): Promise<Task[]> {
     return this.rt.getTasks({ tags: [tagForRun(runId)] });
+  }
+
+  // --------------------------------------------------------------------------
+  // FFM personality bootstrap
+  // --------------------------------------------------------------------------
+
+  /**
+   * Ensure the agent has a Five-Factor (OCEAN) personality.
+   *
+   * Idempotent: if `character.settings.AVB_FFM_SEED` is already set the
+   * profile is logged and we return without touching the file. Otherwise:
+   *   - resolve a 256-bit seed (env AVB_FFM_SEED if provided, else random),
+   *   - derive scores + archetype deterministically,
+   *   - call ScryptedAI to expand into bio/adjectives/topics/style/posts,
+   *   - merge into the live runtime character (so this process sees it),
+   *   - persist to the agent's character.json on disk.
+   *
+   * Runs before autoStartIfNeeded() so the avatar pipeline's character
+   * digest reflects the enriched personality.
+   */
+  private async bootstrapFfmPersonality(): Promise<void> {
+    const settings = (this.rt.character.settings ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const existing = settings[FFM_SEED_SETTING];
+    if (typeof existing === "string" && existing) {
+      const profile = deriveFfmProfile(existing);
+      this.rt.logger.info(
+        `[avb] FFM personality present: ${profile.archetype.name} ` +
+          `(${profile.archetype.code}) ${formatFfmScores(profile.scores)}`,
+      );
+      return;
+    }
+
+    // Resolve seed: env override → fresh random.
+    const envSeed = this.rt.getSetting(ENV_AVB_FFM_SEED);
+    const seed =
+      typeof envSeed === "string" && envSeed
+        ? normalizeFfmSeed(envSeed)
+        : createFfmSeed();
+    const profile = deriveFfmProfile(seed);
+    this.rt.logger.info(
+      `[avb] Rolling FFM personality: ${profile.archetype.name} ` +
+        `(${profile.archetype.code}) ${formatFfmScores(profile.scores)} ` +
+        `seed=${seed.slice(0, 8)}…`,
+    );
+
+    // Expand via ScryptedAI (blocking; ~few seconds). The service is
+    // already loaded — start() awaited getServiceLoadPromise above.
+    const fields = await expandFfmToCharacterFields(this.rt, profile, {
+      name: this.rt.character.name,
+    });
+
+    // Merge into the live runtime character so downstream consumers
+    // (digestCharacter, prompt builders) see the enriched fields now.
+    const enriched = buildFfmCharacter(
+      this.rt.character as Partial<Character>,
+      profile,
+      fields,
+    );
+    Object.assign(this.rt.character, enriched);
+
+    // Persist to disk in standard ElizaOS character.json format.
+    // saveCharacter() defaults to findCharacterFile() → ./character.json.
+    // CRITICAL: strip secrets — the runtime character has env-injected
+    // credentials (loadCharacter → importSecretsFromEnv) that must never
+    // reach disk. The runtime copy above keeps them; only the persisted
+    // file is scrubbed.
+    const path = findCharacterFile() ?? undefined;
+    await saveCharacter(stripCharacterSecrets(enriched), path);
+    this.rt.logger.info(
+      `[avb] FFM personality persisted${path ? ` → ${path}` : ""}`,
+    );
   }
 
   // --------------------------------------------------------------------------

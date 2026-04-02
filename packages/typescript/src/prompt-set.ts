@@ -175,7 +175,7 @@ export interface RenderedPromptSet {
   readonly system: string;
   /** The user prompt (per-request data). */
   readonly user: string;
-  /** Model limits in effect for this render (forwarded for max_tokens). */
+  /** Model limits in effect for this render (client-side input budgeting only). */
   readonly limits: ModelLimits;
   /** True if sanitization truncated either prompt to fit the input budget. */
   readonly truncated: boolean;
@@ -337,16 +337,42 @@ export class PromptSet {
 /**
  * Adapter: convert a rendered set to ScryptedAI's snake_case wire shape.
  * Kept separate from the class so `PromptSet` itself stays provider-agnostic.
+ *
+ * ## Required wire fields (verified live against /generations/text/nova-pro, 2026-04)
+ *
+ * `auto_calculate_tokens: false` and an explicit `max_tokens` are BOTH
+ * mandatory. The recipe schema advertises `max_tokens` default 2000 and
+ * `auto_calculate_tokens` default true, but the observed behaviour is:
+ *
+ *   request body                                  → metadata.max_tokens_requested  finish_reason
+ *   ─────────────────────────────────────────────   ─────────────────────────────  ─────────────
+ *   { max_tokens: 10000 }                          → 100                            max_tokens
+ *   { }                              (pure default) → 100                            max_tokens
+ *   { auto_calculate_tokens: false }               → 100                            max_tokens
+ *   { max_tokens: 2000, auto_calculate_tokens:false } → 2000                         end_turn ✓
+ *   { max_tokens: 9000, auto_calculate_tokens:false } → 9000                         end_turn ✓
+ *
+ * i.e. auto-calc silently overrides any caller value with 100, and with
+ * auto-calc disabled there is no real server-side default. We therefore:
+ *   - always send `auto_calculate_tokens: false`
+ *   - always send `max_tokens` = the model's registry `maxOutputTokens`
+ *     (9000 for nova-pro — see model-registry.json)
+ *
+ * PromptSet limits remain primarily for client-side INPUT budgeting (we
+ * pre-estimate and truncate so the prompt is guaranteed to fit); the output
+ * ceiling is forwarded only because the server default is unusable.
  */
 export function toScryptedPayload(r: RenderedPromptSet): {
   system_prompt: string;
   user_prompt: string;
   max_tokens: number;
+  auto_calculate_tokens: false;
 } {
   return {
     system_prompt: r.system,
     user_prompt: r.user,
     max_tokens: r.limits.maxOutputTokens,
+    auto_calculate_tokens: false,
   };
 }
 

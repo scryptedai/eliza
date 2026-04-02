@@ -417,7 +417,7 @@ describe("PromptSet: withLimits / withModel", () => {
 });
 
 describe("PromptSet: toScryptedPayload", () => {
-  it("converts to snake_case wire shape with max_tokens", () => {
+  it("converts to snake_case wire shape and disables server auto-calc", () => {
     const ps = new PromptSet({
       system: "sys",
       user: "usr {{X}}",
@@ -428,6 +428,7 @@ describe("PromptSet: toScryptedPayload", () => {
       system_prompt: "sys",
       user_prompt: "usr data",
       max_tokens: 256,
+      auto_calculate_tokens: false,
     });
   });
 });

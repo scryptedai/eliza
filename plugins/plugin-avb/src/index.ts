@@ -56,6 +56,7 @@ export {
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
   ENV_AVB_AUTOGEN_ON_BOOT,
+  ENV_AVB_FFM_SEED,
   ENV_AVB_IMAGE_METHOD,
   PHASE_TICK_INTERVAL_MS,
   PIPELINE,
@@ -63,6 +64,38 @@ export {
   tagForRun,
   WORKER_NAMES,
 } from "./constants.ts";
+
+// FFM — Five-Factor (OCEAN) personality engine
+export {
+  buildFfmCharacter,
+  classifyArchetype,
+  createFfmSeed,
+  deriveFfmProfile,
+  ensureFfmCharacterFile,
+  expandFfmToCharacterFields,
+  FFM_ARCHETYPE_THRESHOLD,
+  FFM_ARCHETYPES,
+  FFM_DISTRIBUTIONS,
+  FFM_SEED_BYTES,
+  FFM_SEED_HEX_LEN,
+  FFM_SEED_SETTING,
+  FFM_TEXT_MODEL,
+  FFM_TRAITS,
+  type FfmArchetype,
+  type FfmCharacterFields,
+  type FfmProfile,
+  ffmPromptSet,
+  type FfmRuntimeSurface,
+  type FfmScores,
+  type FfmTrait,
+  formatFfmScores,
+  normalizeFfmSeed,
+  parseFfmCharacterFields,
+  renderFfmPrompt,
+  rngFromSeed,
+  rollFfmTraits,
+  type TraitDistribution,
+} from "./ffm.ts";
 
 // Character introspection (reusable independently)
 export {
