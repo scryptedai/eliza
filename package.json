@@ -124,6 +124,8 @@
     "@openapitools/openapi-generator-cli",
     "@polyagent/app",
     "@swc/core",
+    "@tensorflow/tfjs-node",
+    "@tensorflow/tfjs-node-gpu",
     "bigint-buffer",
     "bufferutil",
     "bun",

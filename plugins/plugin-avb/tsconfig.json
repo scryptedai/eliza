@@ -11,6 +11,7 @@
     "declaration": false,
     "declarationMap": false,
     "skipLibCheck": true,
+    "resolveJsonModule": true,
     "paths": {
       "@elizaos/core": ["./packages/typescript/src/index.node.ts"],
       "@elizaos/core/*": ["./packages/typescript/src/*"],

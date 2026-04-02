@@ -27,6 +27,8 @@
 import type { Plugin } from "@elizaos/core";
 import { generateAvatarAction } from "./action.ts";
 import { AvbService } from "./service.ts";
+import { slm16StatusProvider } from "./slm16/provider.ts";
+import { Slm16Service } from "./slm16/service.ts";
 
 // ----------------------------------------------------------------------------
 // Plugin definition
@@ -36,9 +38,12 @@ export const avbPlugin: Plugin = {
   name: "avb",
   description:
     "Autonomous Virtual Being pipeline — character introspection → avatar " +
-    "generation via db-persisted state machine. Calls scryptedai for actual generation.",
+    "generation via db-persisted state machine, plus the SLM16 background " +
+    "trainer (16 MiB local language model benchmarked against Nova Pro). " +
+    "Calls scryptedai for actual generation.",
   dependencies: ["scryptedai"],
-  services: [AvbService],
+  services: [AvbService, Slm16Service],
+  providers: [slm16StatusProvider],
   actions: [generateAvatarAction],
 };
 
@@ -76,6 +81,10 @@ export {
 } from "./introspect.ts";
 // Service
 export { AvbService } from "./service.ts";
+
+// SLM16 — Small Language Model trainer
+export * as slm16 from "./slm16/index.ts";
+export { Slm16Service, slm16StatusProvider } from "./slm16/index.ts";
 
 // Types
 export type {

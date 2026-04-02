@@ -50,6 +50,8 @@ import {
   WORKER_NAMES,
 } from "./constants.ts";
 import { digestCharacter, imagePromptSet } from "./introspect.ts";
+import { SLM16_SERVICE_TYPE } from "./slm16/constants.ts";
+import type { Slm16Service } from "./slm16/service.ts";
 import type {
   AvbPhaseMetadata,
   AvbRunContext,
@@ -156,6 +158,21 @@ export class AvbService extends Service {
         `[avb] Auto-start check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     });
+
+    // Kick SLM16: bootstrap FineWeb data, then ensure the background
+    // trainer is running. Fire-and-forget so the avatar pipeline isn't
+    // gated on shard downloads (~400 MB on first boot).
+    void svc.rt
+      .getServiceLoadPromise(SLM16_SERVICE_TYPE)
+      .then((slm) => {
+        const s = slm as Slm16Service;
+        return s.ensureBootstrapped().then(() => s.ensureTraining());
+      })
+      .catch((err) => {
+        svc.rt.logger.warn(
+          `[avb] SLM16 kick failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
 
     return svc;
   }

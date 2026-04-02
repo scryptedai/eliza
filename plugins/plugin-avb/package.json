@@ -17,11 +17,18 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p ./tsconfig.json",
     "lint": "biome check ./src",
-    "lint:fix": "biome check --write ./src"
+    "lint:fix": "biome check --write ./src",
+    "slm16:smoke": "bun scripts/slm16-smoke.ts"
   },
   "dependencies": {
     "@elizaos/core": "workspace:*",
-    "@elizaos/plugin-scryptedai": "workspace:*"
+    "@elizaos/plugin-scryptedai": "workspace:*",
+    "@tensorflow/tfjs": "^4.22.0",
+    "sentencepiece-js": "^1.1.0"
+  },
+  "optionalDependencies": {
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "@tensorflow/tfjs-node-gpu": "^4.22.0"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",

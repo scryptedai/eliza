@@ -12,7 +12,12 @@
  * (AVB_AUTOGEN_ON_BOOT default-on). This runner only boots and observes.
  *
  * Usage (from plugin dir):
- *   bun --env-file=../../.env scripts/avb-runner.ts
+ *   bun --env-file=../../.env scripts/avb-runner.ts          # daemon
+ *   bun --env-file=../../.env scripts/avb-runner.ts --once   # exit after avatar
+ *
+ * By default the runner stays alive after the avatar pipeline finishes
+ * so SLM16 background training continues. Pass --once to restore the
+ * old observe-and-exit behaviour.
  *
  * Opt-out of auto-gen: AVB_AUTOGEN_ON_BOOT=false
  * Override character:  place a character.{ts,json} in cwd
@@ -25,6 +30,9 @@ import {
 } from "@elizaos/core";
 import { scryptedaiPlugin } from "@elizaos/plugin-scryptedai";
 import { type AvbPhaseMetadata, avbPlugin } from "../src/index.ts";
+import { SLM16_SERVICE_TYPE, type Slm16Service } from "../src/slm16/index.ts";
+
+const ONCE = process.argv.includes("--once");
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -92,6 +100,19 @@ async function main() {
   await runtime.getServiceLoadPromise("scryptedai");
   await runtime.getServiceLoadPromise("avb");
   console.log("✓ scryptedai + avb services available");
+
+  // SLM16 status observer — registered as a repeat task via the AVB
+  // async-tick pattern, so this never blocks the avatar pipeline.
+  void runtime
+    .getServiceLoadPromise(SLM16_SERVICE_TYPE)
+    .then((slm) => (slm as Slm16Service).startStatusObserver(10_000))
+    .then((id) => console.log(`✓ slm16 status observer task=${id}`))
+    .catch((err) =>
+      console.warn(
+        `! slm16 observer not started: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+
   console.log(
     "✓ NOT calling createRun() — waiting for autonomous trigger...\n",
   );
@@ -164,8 +185,29 @@ async function main() {
     process.exitCode = 1;
   }
 
-  await runtime.stop();
-  console.log("✓ Runtime stopped");
+  if (ONCE) {
+    await runtime.stop();
+    console.log("✓ Runtime stopped (--once)");
+    return;
+  }
+
+  // Daemon mode (default): keep the runtime alive so SLM16 training and
+  // its status-observer task continue indefinitely. ^C to exit.
+  console.log("─".repeat(60));
+  console.log(
+    "✓ Entering daemon mode — SLM16 training continues in background.",
+  );
+  console.log("  Status logged every ~10 s by SLM16_STATUS_OBSERVER.");
+  console.log("  Press ^C to stop, or run with --once to exit after avatar.");
+
+  const shutdown = async () => {
+    console.log("\n… stopping runtime");
+    await runtime.stop().catch(() => undefined);
+    process.exit(process.exitCode ?? 0);
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+  await new Promise<void>(() => {});
 }
 
 main().catch((err) => {
