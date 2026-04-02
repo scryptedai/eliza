@@ -403,6 +403,11 @@ pub struct DesktopWrapper {
     #[serde(skip)]
     pub dom_bounds:
         Arc<Mutex<std::collections::HashMap<u32, (String, String, (f64, f64, f64, f64))>>>,
+    /// Snapshot generation counter + ref resolver. Holds Arc clones of the
+    /// five caches above so it sees writes immediately. See ref_snapshot.rs
+    /// and docs/ISSUE2_REF_SNAPSHOTS.md.
+    #[serde(skip)]
+    pub ref_state: Arc<crate::ref_snapshot::RefSnapshotState>,
     /// Stores clustered index-to-bounds mapping from the last get_window_tree with clustered_yaml format
     /// Key is prefixed index (e.g., "u1", "d2", "o3", "p4", "g5"), value is (source, original_index, bounds)
     #[serde(skip)]
@@ -688,6 +693,18 @@ pub struct ClickElementArgs {
     )]
     pub vision_type: Option<VisionType>,
 
+    #[schemars(
+        description = "Prefixed ref from snapshot output (e.g. 'u5' for UIA element 5, 'o3' for OCR word 3, 'd12' for DOM element 12). Prefixes: u=ui_tree, o=ocr, d=dom, p=omniparser, g=gemini. Preferred over index+vision_type — encodes the source in the ref itself. Accepts a leading '#' so '#u5' from YAML can be pasted directly."
+    )]
+    #[serde(default, rename = "ref")]
+    pub ref_: Option<String>,
+
+    #[schemars(
+        description = "The snapshot_id returned by get_window_tree. If provided and a newer snapshot has since been taken, the click is rejected with a 'stale ref' error instead of clicking outdated coordinates. Strongly recommended when using ref or index."
+    )]
+    #[serde(default)]
+    pub snapshot_id: Option<u64>,
+
     // === MODE 3: Coordinate-based clicking ===
     #[schemars(description = "Absolute screen X coordinate. Used with y for coordinate mode.")]
     pub x: Option<f64>,
@@ -741,9 +758,20 @@ impl ClickElementArgs {
         // Selector mode requires an actual selector, not just process
         // (process is just a scoping filter that can be used with any mode)
         let has_selector = self.selector.is_some();
-        let has_index = self.index.is_some();
+        // ref_ and index both lead to ClickMode::Index — the dispatch
+        // between them happens inside the Index arm.
+        let has_index = self.index.is_some() || self.ref_.is_some();
         let has_coords = self.x.is_some() && self.y.is_some();
         let has_partial_coords = self.x.is_some() || self.y.is_some();
+
+        // Reject ambiguous index targeting: ref encodes source + index in
+        // one string, so combining it with the legacy fields is a mistake.
+        if self.ref_.is_some() && (self.index.is_some() || self.vision_type.is_some()) {
+            return Err(
+                "Cannot combine 'ref' with 'index' or 'vision_type' — ref already encodes both"
+                    .to_string(),
+            );
+        }
 
         // Validate: exactly one mode must be specified
         let mode_count = [has_selector, has_index, has_coords]
@@ -757,13 +785,15 @@ impl ClickElementArgs {
                 return Err("Coordinate mode requires both 'x' and 'y' parameters".to_string());
             }
             return Err(
-                "Must specify one of: (selector), (index), or (x + y coordinates)".to_string(),
+                "Must specify one of: (selector), (ref or index), or (x + y coordinates)"
+                    .to_string(),
             );
         }
 
         if mode_count > 1 {
             return Err(
-                "Cannot mix modes: specify only one of (selector), (index), or (x + y)".to_string(),
+                "Cannot mix modes: specify only one of (selector), (ref or index), or (x + y)"
+                    .to_string(),
             );
         }
 

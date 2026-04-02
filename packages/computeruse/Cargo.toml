@@ -8,6 +8,7 @@ members = [
     "packages/computeruse-ts",
     "crates/computeruse-mcp-agent",
     "crates/computeruse-workflow-recorder",
+    "crates/computeruse-browser-cdp",
 ]
 
 

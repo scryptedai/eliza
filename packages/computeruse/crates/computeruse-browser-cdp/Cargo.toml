@@ -1,0 +1,23 @@
+[package]
+name = "computeruse-browser-cdp"
+version = "2.0.0"
+edition = "2021"
+description = "Chrome DevTools Protocol backend for computeruse browser automation"
+authors = ["elizaOS Contributors"]
+repository = "https://github.com/mediar-ai/computeruse"
+license = "MIT"
+
+[dependencies]
+# The trait this crate implements lives in computeruse-rs.
+computeruse = { workspace = true }
+
+chromiumoxide = "0.9"
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = "0.3"
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Integration tests need full tokio for #[tokio::test]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

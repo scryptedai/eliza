@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use sysinfo::{ProcessesToUpdate, System};
 use tracing::{debug, error, info, instrument};
 
+pub mod browser_backend;
 pub mod browser_script;
 pub mod element;
 pub mod errors;
@@ -30,6 +31,9 @@ pub mod utils;
 #[cfg(target_os = "windows")]
 pub mod computer_use;
 
+pub use browser_backend::{
+    BrowserBackend, BrowserCapabilities, BrowserSnapshot, ExtensionBridgeBackend, WaitUntil,
+};
 pub use element::{OcrElement, SerializableUIElement, UIElement, UIElementAttributes};
 pub use errors::AutomationError;
 pub use locator::Locator;
@@ -437,6 +441,11 @@ type DomBoundsCache = HashMap<u32, (String, String, (f64, f64, f64, f64))>;
 /// The main entry point for UI automation
 pub struct Desktop {
     engine: Arc<dyn platforms::AccessibilityEngine>,
+    /// Browser automation backend (Issue #5). Defaults to
+    /// `ExtensionBridgeBackend` — same global-singleton path the
+    /// pre-trait code used. Swap via `with_browser_backend()` to plug
+    /// in CDP (Issue #1) without touching tool handlers.
+    browser: Arc<dyn BrowserBackend>,
     /// Cancellation token for stopping execution (wrapped in RwLock to allow reset)
     cancellation_token: Arc<RwLock<CancellationToken>>,
     /// Cache for UI Automation tree element bounds (index → bounds info)
@@ -457,6 +466,9 @@ impl Desktop {
         let engine = platforms::create_engine(use_background_apps, activate_app)?;
         Ok(Self {
             engine,
+            // Zero-sized lazy adapter — defers `ExtensionBridge::global()`
+            // to first use, so this constructor stays sync.
+            browser: Arc::new(ExtensionBridgeBackend),
             cancellation_token: Arc::new(RwLock::new(CancellationToken::new())),
             uia_cache: Arc::new(Mutex::new(HashMap::new())),
             ocr_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -464,6 +476,20 @@ impl Desktop {
             vision_cache: Arc::new(Mutex::new(HashMap::new())),
             dom_cache: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Replace the browser backend. Builder-style — call after `new()`:
+    /// `Desktop::new_default()?.with_browser_backend(Arc::new(cdp))`.
+    pub fn with_browser_backend(mut self, backend: Arc<dyn BrowserBackend>) -> Self {
+        self.browser = backend;
+        self
+    }
+
+    /// Borrow the active browser backend. Tool handlers that need
+    /// CDP-only methods (`snapshot`, `click_ref`, `pdf`, etc.) call
+    /// this directly after checking `capabilities()`.
+    pub fn browser(&self) -> &Arc<dyn BrowserBackend> {
+        &self.browser
     }
 
     /// Initializet the desktop without arguments
@@ -1186,8 +1212,29 @@ impl Desktop {
     /// the operation will be interrupted and return an error.
     #[instrument(skip(self, script))]
     pub async fn execute_browser_script(&self, script: &str) -> Result<String, AutomationError> {
-        let browser_window = self.engine.get_current_browser_window().await?;
         let cancel_token = self.cancellation_token();
+
+        // Backends that own their connection (CDP) eval directly —
+        // no AX lookup, works headless. Backends that target whatever
+        // tab is focused (ExtensionBridge) need the engine path: find
+        // the browser window, focus it, then go through the full
+        // browser_script.rs orchestration (30s connect-wait, 3-retry,
+        // ERROR-prefix Promise-rejection parsing). Default backend
+        // returns `has_own_connection: false`, so this branch is
+        // never taken without an explicit `with_browser_backend()` —
+        // i.e. zero behavior change from pre-trait code.
+        if self.browser.capabilities().has_own_connection {
+            return tokio::select! {
+                r = self.browser.eval(script, std::time::Duration::from_secs(120)) => r,
+                _ = cancel_token.cancelled() => {
+                    Err(AutomationError::OperationCancelled(
+                        "Browser script execution cancelled by stop_execution".into()
+                    ))
+                }
+            };
+        }
+
+        let browser_window = self.engine.get_current_browser_window().await?;
         tokio::select! {
             result = browser_window.execute_browser_script(script) => result,
             _ = cancel_token.cancelled() => {
@@ -1235,8 +1282,12 @@ impl Desktop {
         url: Option<&str>,
         title: Option<&str>,
     ) -> Result<Option<extension_bridge::CloseTabResult>, AutomationError> {
-        use std::time::Duration;
-        extension_bridge::try_close_tab(tab_id, url, title, Duration::from_secs(10)).await
+        // Routes through the trait now. Default backend's impl is
+        // exactly `extension_bridge::try_close_tab(...)`, same args,
+        // same timeout — bit-identical to the pre-trait body.
+        self.browser
+            .close_tab(tab_id, url, title, std::time::Duration::from_secs(10))
+            .await
     }
     #[instrument(skip(self))]
     pub async fn get_current_window(&self) -> Result<UIElement, AutomationError> {
@@ -2104,6 +2155,9 @@ impl Clone for Desktop {
     fn clone(&self) -> Self {
         Self {
             engine: self.engine.clone(),
+            // Clone shares the backend Arc — same CDP page / extension
+            // singleton across all Desktop clones.
+            browser: self.browser.clone(),
             // Clone shares the same cancellation token so stop_execution affects all clones
             cancellation_token: self.cancellation_token.clone(),
             // Clone shares the same caches so index lookups work across clones

@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use sysinfo::{ProcessesToUpdate, System};
 use computeruse::element::UIElementImpl;
-use computeruse::{AutomationError, Browser, Desktop, Selector, UIElement};
+use computeruse::{AutomationError, Browser, Desktop, ElementSource, Selector, UIElement};
 use tokio::sync::Mutex;
 use tracing::{info, warn, Instrument};
 
@@ -798,6 +798,23 @@ impl DesktopWrapper {
             }
         };
 
+        // Build the per-modality caches up front so we can hand Arc clones
+        // to RefSnapshotState — both DesktopWrapper and RefSnapshotState
+        // then point at the same underlying maps.
+        let ocr_bounds = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let omniparser_items = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let vision_items = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let uia_bounds = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let dom_bounds = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+        let ref_state = Arc::new(crate::ref_snapshot::RefSnapshotState::new(
+            Arc::clone(&uia_bounds),
+            Arc::clone(&ocr_bounds),
+            Arc::clone(&dom_bounds),
+            Arc::clone(&omniparser_items),
+            Arc::clone(&vision_items),
+        ));
+
         Ok(Self {
             desktop: Arc::new(desktop),
             tool_router: Self::tool_router(),
@@ -809,11 +826,12 @@ impl DesktopWrapper {
             current_scripts_base_path: Arc::new(Mutex::new(None)),
             window_manager: Arc::new(computeruse::WindowManager::new()),
             in_sequence: Arc::new(std::sync::Mutex::new(false)),
-            ocr_bounds: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            omniparser_items: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            vision_items: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            uia_bounds: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            dom_bounds: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            ocr_bounds,
+            omniparser_items,
+            vision_items,
+            uia_bounds,
+            dom_bounds,
+            ref_state,
             clustered_bounds: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(target_os = "windows")]
             inspect_overlay_handle: Arc::new(std::sync::Mutex::new(None)),
@@ -1386,6 +1404,11 @@ impl DesktopWrapper {
         // Detect if this is a browser window
         let is_browser = Self::detect_browser_by_pid(pid);
 
+        // Bump the snapshot generation. Any cache writes below will belong
+        // to this generation; agents echo it back via click_element's
+        // snapshot_id field for staleness detection.
+        let snapshot_id = self.ref_state.bump();
+
         // Build the base result JSON first
         let mut result_json = json!({
             "action": "get_window_tree",
@@ -1393,6 +1416,7 @@ impl DesktopWrapper {
             "process": args.process,
             "pid": pid,
             "title": args.title,
+            "snapshot_id": snapshot_id,
             "detailed_attributes": args.tree.include_detailed_attributes.unwrap_or(true),
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
@@ -1478,6 +1502,8 @@ impl DesktopWrapper {
                                             cache.len()
                                         );
                                     }
+                                    self.ref_state
+                                        .mark_populated(ElementSource::Dom, snapshot_id);
                                 }
                                 crate::mcp_types::TreeOutputFormat::VerboseJson => {
                                     result_json["browser_dom"] = json!(dom_elements);
@@ -1516,6 +1542,8 @@ impl DesktopWrapper {
             if let Ok(mut cache) = self.uia_bounds.lock() {
                 *cache = bounds_cache;
             }
+            self.ref_state
+                .mark_populated(ElementSource::Uia, snapshot_id);
         }
 
         // Perform OCR if requested
@@ -1540,6 +1568,8 @@ impl DesktopWrapper {
                             if let Ok(mut bounds) = self.ocr_bounds.lock() {
                                 *bounds = ocr_formatting_result.index_to_bounds;
                             }
+                            self.ref_state
+                                .mark_populated(ElementSource::Ocr, snapshot_id);
                             result_json["ocr_tree"] = json!(ocr_formatting_result.formatted);
                         }
                         crate::mcp_types::TreeOutputFormat::VerboseJson => {
@@ -1576,6 +1606,8 @@ impl DesktopWrapper {
                             if let Ok(mut locked_cache) = self.omniparser_items.lock() {
                                 *locked_cache = cache;
                             }
+                            self.ref_state
+                                .mark_populated(ElementSource::Omniparser, snapshot_id);
                             result_json["omniparser_tree"] = json!(formatted);
                         }
                         crate::mcp_types::TreeOutputFormat::VerboseJson => {
@@ -1597,6 +1629,8 @@ impl DesktopWrapper {
                             if let Ok(mut locked_cache) = self.omniparser_items.lock() {
                                 *locked_cache = cache;
                             }
+                            self.ref_state
+                                .mark_populated(ElementSource::Omniparser, snapshot_id);
 
                             result_json["omniparser_tree"] = json!(omniparser_tree);
                         }
@@ -1628,6 +1662,8 @@ impl DesktopWrapper {
                             if let Ok(mut locked_cache) = self.vision_items.lock() {
                                 *locked_cache = cache;
                             }
+                            self.ref_state
+                                .mark_populated(ElementSource::Gemini, snapshot_id);
                             result_json["vision_tree"] = json!(formatted);
                         }
                         crate::mcp_types::TreeOutputFormat::VerboseJson => {
@@ -1651,6 +1687,8 @@ impl DesktopWrapper {
                             if let Ok(mut locked_cache) = self.vision_items.lock() {
                                 *locked_cache = cache;
                             }
+                            self.ref_state
+                                .mark_populated(ElementSource::Gemini, snapshot_id);
 
                             result_json["vision_tree"] = json!(vision_tree);
                         }
@@ -2481,8 +2519,9 @@ impl DesktopWrapper {
 **Mode 1 - Selector** (process + selector): Find element by selector and click.
   Example: {\"process\": \"notepad\", \"selector\": \"role:Button|name:Save\", \"click_type\": \"left\"}
 
-**Mode 2 - Index** (index + vision_type): Click indexed item from previous tool response (any action with include_tree_after_action:true, or initial get_window_tree).
-  Example: {\"index\": 5, \"vision_type\": \"ui_tree\", \"click_type\": \"double\"}
+**Mode 2 - Ref** (ref + snapshot_id): Click an item from a prior get_window_tree by its prefixed ref. Prefixes: u=ui_tree, o=ocr, d=dom, p=omniparser, g=gemini. Pass the snapshot_id from get_window_tree to detect stale refs. UIA refs (u*) re-resolve via selector at click time, surviving scrolls.
+  Example: {\"ref\": \"u5\", \"snapshot_id\": 3, \"click_type\": \"double\"}
+  Legacy form (index + vision_type) still works: {\"index\": 5, \"vision_type\": \"ui_tree\"}
 
 **Mode 3 - Coordinates** (x + y): Click at absolute screen coordinates.
   Example: {\"x\": 500, \"y\": 300, \"click_type\": \"right\"}
@@ -2603,137 +2642,164 @@ Click types: 'left' (default), 'double', 'right'. Use ui_diff_before_after:true 
             }
 
             ClickMode::Index => {
-                let index = args.index.unwrap();
-                let vision_type = args.get_vision_type();
-                span.set_attribute("index", index.to_string());
-                span.set_attribute("vision_type", format!("{:?}", vision_type));
-                tracing::info!("[click_element] Index mode: {}, {:?}", index, vision_type);
+                use crate::ref_snapshot::{vision_type_prefix, RefResolution};
 
-                // Track selector for UI tree clicks (populated in match arm)
-                let mut uia_selector: Option<String> = None;
-
-                let (item_label, bounds) = match vision_type {
-                    crate::utils::VisionType::UiTree => {
-                        let r = self
-                            .uia_bounds
-                            .lock()
-                            .map_err(|e| {
-                                McpError::internal_error(format!("Lock error: {e}"), None)
-                            })?
-                            .get(&index)
-                            .cloned();
-                        let Some((role, name, b, selector)) = r else {
-                            span.set_status(false, Some("UIA index not found"));
-                            span.end();
-                            return Err(McpError::internal_error(
-                                format!(
-                                    "UI tree index {} not found. Call get_window_tree first.",
-                                    index
-                                ),
-                                Some(json!({ "index": index })),
-                            ));
-                        };
-                        // Store selector for later use in response
-                        uia_selector = selector;
-                        (
-                            if name.is_empty() {
-                                role
-                            } else {
-                                format!("{role}: {name}")
-                            },
-                            b,
-                        )
-                    }
-                    crate::utils::VisionType::Ocr => {
-                        let r = self
-                            .ocr_bounds
-                            .lock()
-                            .map_err(|e| {
-                                McpError::internal_error(format!("Lock error: {e}"), None)
-                            })?
-                            .get(&index)
-                            .cloned();
-                        let Some((text, b)) = r else {
-                            span.set_status(false, Some("OCR index not found"));
-                            span.end();
-                            return Err(McpError::internal_error(
-                                format!("OCR index {} not found.", index),
-                                Some(json!({ "index": index })),
-                            ));
-                        };
-                        (text, b)
-                    }
-                    crate::utils::VisionType::Omniparser => {
-                        let r = self
-                            .omniparser_items
-                            .lock()
-                            .map_err(|e| {
-                                McpError::internal_error(format!("Lock error: {e}"), None)
-                            })?
-                            .get(&index)
-                            .cloned();
-                        let Some(item) = r else {
-                            span.set_status(false, Some("Omniparser index not found"));
-                            span.end();
-                            return Err(McpError::internal_error(
-                                format!("Omniparser index {} not found.", index),
-                                Some(json!({ "index": index })),
-                            ));
-                        };
-                        let b = item
-                            .box_2d
-                            .ok_or_else(|| McpError::internal_error("No bounds", None))?;
-                        (item.label, (b[0], b[1], b[2] - b[0], b[3] - b[1]))
-                    }
-                    crate::utils::VisionType::Gemini => {
-                        let r = self
-                            .vision_items
-                            .lock()
-                            .map_err(|e| {
-                                McpError::internal_error(format!("Lock error: {e}"), None)
-                            })?
-                            .get(&index)
-                            .cloned();
-                        let Some(item) = r else {
-                            span.set_status(false, Some("Gemini index not found"));
-                            span.end();
-                            return Err(McpError::internal_error(
-                                format!("Gemini index {} not found.", index),
-                                Some(json!({ "index": index })),
-                            ));
-                        };
-                        let b = item
-                            .box_2d
-                            .ok_or_else(|| McpError::internal_error("No bounds", None))?;
-                        (item.element_type, (b[0], b[1], b[2] - b[0], b[3] - b[1]))
-                    }
-                    crate::utils::VisionType::Dom => {
-                        let r = self
-                            .dom_bounds
-                            .lock()
-                            .map_err(|e| {
-                                McpError::internal_error(format!("Lock error: {e}"), None)
-                            })?
-                            .get(&index)
-                            .cloned();
-                        let Some((tag, id, b)) = r else {
-                            span.set_status(false, Some("DOM index not found"));
-                            span.end();
-                            return Err(McpError::internal_error(
-                                format!("DOM index {} not found.", index),
-                                Some(json!({ "index": index })),
-                            ));
-                        };
-                        (
-                            if id.is_empty() {
-                                tag
-                            } else {
-                                format!("{tag}: {id}")
-                            },
-                            b,
-                        )
-                    }
+                // Build the prefixed ref string. Either the agent supplied
+                // it directly (`ref: "u5"`) or we synthesise it from the
+                // legacy `index` + `vision_type` fields so both paths
+                // converge on a single resolver.
+                let ref_str = if let Some(r) = args.ref_.as_ref() {
+                    r.clone()
+                } else {
+                    let idx = args.index.expect("determine_mode guarantees index or ref");
+                    let prefix = vision_type_prefix(args.get_vision_type());
+                    format!("{prefix}{idx}")
                 };
+                span.set_attribute("ref", ref_str.clone());
+                if let Some(snap) = args.snapshot_id {
+                    span.set_attribute("snapshot_id", snap.to_string());
+                }
+                tracing::info!(
+                    "[click_element] Index mode: ref={}, snapshot_id={:?}",
+                    ref_str,
+                    args.snapshot_id
+                );
+
+                // Resolve through the staleness-aware ref resolver.
+                let (item_label, cached_bounds, uia_selector, source) =
+                    match self.ref_state.resolve(&ref_str, args.snapshot_id) {
+                        RefResolution::Found {
+                            label,
+                            bounds,
+                            selector,
+                            source,
+                        } => (label, bounds, selector, source),
+                        RefResolution::Stale {
+                            agent_snapshot,
+                            current_snapshot,
+                            ..
+                        } => {
+                            span.set_status(false, Some("stale snapshot"));
+                            span.end();
+                            return Err(McpError::invalid_request(
+                                format!(
+                                    "Stale ref '{}': snapshot_id {} is outdated (current: {}). \
+                                     Call get_window_tree again before clicking.",
+                                    ref_str, agent_snapshot, current_snapshot
+                                ),
+                                Some(json!({
+                                    "ref": ref_str,
+                                    "agent_snapshot": agent_snapshot,
+                                    "current_snapshot": current_snapshot,
+                                })),
+                            ));
+                        }
+                        RefResolution::CrossModalStale {
+                            source,
+                            claimed_snapshot,
+                            cache_snapshot,
+                            ..
+                        } => {
+                            span.set_status(false, Some("cross-modal stale"));
+                            span.end();
+                            // Map source → include_* flag name for the agent's benefit.
+                            let include_flag = match source {
+                                ElementSource::Uia => "(always included)",
+                                ElementSource::Ocr => "include_ocr=true",
+                                ElementSource::Dom => "include_browser_dom=true",
+                                ElementSource::Omniparser => "include_omniparser=true",
+                                ElementSource::Gemini => "include_gemini_vision=true",
+                            };
+                            let msg = if cache_snapshot == 0 {
+                                format!(
+                                    "Ref '{}' targets {:?}, which has never been included in any snapshot. \
+                                     Call get_window_tree({}) first.",
+                                    ref_str, source, include_flag
+                                )
+                            } else {
+                                format!(
+                                    "Ref '{}' targets {:?}, last refreshed at snapshot {} — \
+                                     but you cited snapshot {} which did not include it. \
+                                     Call get_window_tree({}) again.",
+                                    ref_str, source, cache_snapshot, claimed_snapshot, include_flag
+                                )
+                            };
+                            return Err(McpError::invalid_request(
+                                msg,
+                                Some(json!({
+                                    "ref": ref_str,
+                                    "source": format!("{:?}", source),
+                                    "claimed_snapshot": claimed_snapshot,
+                                    "cache_snapshot": cache_snapshot,
+                                    "include_flag": include_flag,
+                                })),
+                            ));
+                        }
+                        RefResolution::NotFound { source, .. } => {
+                            span.set_status(false, Some("ref not found"));
+                            span.end();
+                            return Err(McpError::invalid_request(
+                                format!(
+                                    "Ref '{}' not found in {:?} cache. \
+                                     Call get_window_tree first or use a ref from the latest snapshot.",
+                                    ref_str, source
+                                ),
+                                Some(json!({ "ref": ref_str, "source": format!("{:?}", source) })),
+                            ));
+                        }
+                        RefResolution::Malformed { .. } => {
+                            span.set_status(false, Some("malformed ref"));
+                            span.end();
+                            return Err(McpError::invalid_request(
+                                format!(
+                                    "Malformed ref '{}'. Expected a prefixed index like 'u5' \
+                                     (u=ui_tree, o=ocr, d=dom, p=omniparser, g=gemini).",
+                                    ref_str
+                                ),
+                                Some(json!({ "ref": ref_str })),
+                            ));
+                        }
+                    };
+
+                // Hybrid resolution: if we have a selector (UIA only),
+                // re-query the live tree for fresh bounds. This is what
+                // makes refs survive scrolling — OpenClaw's key advantage.
+                // Cached bounds remain the fallback if re-resolve fails.
+                let (bounds, resolved_via) = match uia_selector.as_deref() {
+                    Some(sel) => {
+                        match self
+                            .desktop
+                            .locator(sel)
+                            .first(Some(Duration::from_millis(2000)))
+                            .await
+                            .and_then(|el| el.bounds())
+                        {
+                            Ok(fresh) => {
+                                if fresh != cached_bounds {
+                                    tracing::info!(
+                                        "[click_element] Re-resolved {}: cached={:?} → fresh={:?}",
+                                        ref_str,
+                                        cached_bounds,
+                                        fresh
+                                    );
+                                }
+                                (fresh, "selector")
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[click_element] Selector re-resolve for {} failed ({}), \
+                                     falling back to cached bounds",
+                                    ref_str,
+                                    e
+                                );
+                                (cached_bounds, "cached_bounds_fallback")
+                            }
+                        }
+                    }
+                    None => (cached_bounds, "cached_bounds"),
+                };
+                span.set_attribute("resolved_via", resolved_via.to_string());
+                span.set_attribute("source", format!("{:?}", source));
 
                 let click_x = bounds.0 + bounds.2 / 2.0;
                 let click_y = bounds.1 + bounds.3 / 2.0;
@@ -2773,7 +2839,6 @@ Click types: 'left' (default), 'double', 'right'. Use ui_diff_before_after:true 
                     args.restore_cursor,
                 ) {
                     Ok(()) => {
-                        let vt_str = format!("{:?}", vision_type).to_lowercase();
                         let ct_str = match args.click_type {
                             crate::utils::ClickType::Left => "left",
                             crate::utils::ClickType::Double => "double",
@@ -2781,11 +2846,17 @@ Click types: 'left' (default), 'double', 'right'. Use ui_diff_before_after:true 
                         };
                         let mut result_json = json!({
                             "action": "click", "mode": "index", "status": "executed_without_error",
-                            "index": index, "vision_type": vt_str, "click_type": ct_str, "label": item_label,
+                            "ref": ref_str,
+                            "source": format!("{:?}", source),
+                            "click_type": ct_str, "label": item_label,
+                            "resolved_via": resolved_via,
                             "clicked_at": { "x": click_x, "y": click_y },
                             "bounds": { "x": bounds.0, "y": bounds.1, "width": bounds.2, "height": bounds.3 },
                             "timestamp": chrono::Utc::now().to_rfc3339()
                         });
+                        if let Some(snap) = args.snapshot_id {
+                            result_json["snapshot_id"] = json!(snap);
+                        }
                         // Add selector if available (UI tree clicks only)
                         if let Some(ref sel) = uia_selector {
                             result_json["selector"] = json!(sel);
@@ -2812,8 +2883,8 @@ Click types: 'left' (default), 'double', 'right'. Use ui_diff_before_after:true 
                         span.set_status(false, Some(&e.to_string()));
                         span.end();
                         return Err(McpError::internal_error(
-                            format!("Failed to click index {}: {e}", index),
-                            Some(json!({ "index": index, "label": item_label })),
+                            format!("Failed to click ref {}: {e}", ref_str),
+                            Some(json!({ "ref": ref_str, "label": item_label })),
                         ));
                     }
                 }
