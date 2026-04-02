@@ -32,6 +32,7 @@ import {
   toScryptedPayload,
 } from "@elizaos/core";
 import {
+  extractAssetUrl,
   type JobType,
   type NormalizedJobResult,
   SCRYPTEDAI_SERVICE_TYPE,
@@ -95,8 +96,34 @@ export class AvbService extends Service {
    * Protects against double-execution when the webhook fast-path
    * (eagerExecuteForJob) races with a TaskService tick.
    * In-memory only — the race itself is in-memory.
+   * Entries are cleared when their Task row is deleted (see onPhaseComplete /
+   * onPhaseFailed) so the set stays bounded by in-flight task count.
    */
   private readonly handledTasks = new Set<string>();
+
+  /**
+   * Workers built once in start() and reused. Indexed by phase so the
+   * webhook fast-path (workerForPhase) reuses the same closures the
+   * runtime registered, instead of allocating fresh ones per event.
+   */
+  private readonly workers = new Map<
+    PhaseName,
+    {
+      name: string;
+      execute: (
+        rt: unknown,
+        opts: Record<string, unknown>,
+        t: Task,
+      ) => Promise<void>;
+    }
+  >();
+
+  /**
+   * Settles when autoStartIfNeeded() resolves. Tests can `await
+   * svc.whenReady()` instead of guessing microtask depth. Resolved
+   * immediately if autostart is skipped.
+   */
+  private autoStartDone: Promise<void> = Promise.resolve();
 
   /**
    * Runtime surface (structural cast of this.runtime).
@@ -118,10 +145,13 @@ export class AvbService extends Service {
       svc.imageMethod = envMethod;
     }
 
-    // Register phase workers
-    svc.rt.registerTaskWorker(svc.buildTextPhaseWorker());
-    svc.rt.registerTaskWorker(svc.buildImagePhaseWorker());
-    svc.rt.registerTaskWorker(svc.buildDeliverWorker());
+    // Build workers once, register them, AND cache for webhook fast-path reuse.
+    svc.workers.set("TEXT_PHASE", svc.buildTextPhaseWorker());
+    svc.workers.set("IMAGE_PHASE", svc.buildImagePhaseWorker());
+    svc.workers.set("DELIVER", svc.buildDeliverWorker());
+    for (const w of svc.workers.values()) {
+      svc.rt.registerTaskWorker(w);
+    }
 
     // Hook scryptedai terminal events for webhook fast-path.
     // Service init order isn't guaranteed (avb may start before scryptedai
@@ -150,8 +180,9 @@ export class AvbService extends Service {
     );
 
     // Autonomous trigger: generate an avatar on boot if one doesn't exist.
-    // Fire-and-forget so we don't block service startup.
-    void svc.autoStartIfNeeded().catch((err) => {
+    // Fire-and-forget so we don't block service startup. The promise is
+    // stored so tests can await deterministic settlement (see whenReady).
+    svc.autoStartDone = svc.autoStartIfNeeded().catch((err) => {
       svc.rt.logger.warn(
         `[avb] Auto-start check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -163,6 +194,15 @@ export class AvbService extends Service {
   async stop(): Promise<void> {
     this.unsubscribeTerminal?.();
     this.unsubscribeTerminal = undefined;
+  }
+
+  /**
+   * Resolves once the boot-time autoStartIfNeeded() chain has settled.
+   * Test seam — production callers don't need this (start() returns
+   * before autostart settles by design).
+   */
+  whenReady(): Promise<void> {
+    return this.autoStartDone;
   }
 
   // --------------------------------------------------------------------------
@@ -234,11 +274,15 @@ export class AvbService extends Service {
     }
 
     // Already delivered? Check the agent's identity room for a prior avatar.
+    // The identity room is low-traffic (only the agent writes here), and the
+    // most recent AVB delivery — if any — was the last thing written before
+    // its Task row was deleted, so it sits near the head of the result set.
+    // 200 gives generous headroom against interleaved system messages.
     const roomId = this.rt.agentId;
     const memories = await this.rt.getMemories({
       roomId,
       tableName: "messages",
-      count: 50,
+      count: 200,
     });
     const existing = memories.find((m) => {
       const c = m.content as
@@ -294,6 +338,9 @@ export class AvbService extends Service {
     }
     // Only delete the old task once the next one is durably written.
     await this.rt.deleteTask(taskId);
+    // Task row gone → race window for this taskId is closed. Reclaim the
+    // idempotency-set entry so handledTasks stays bounded by in-flight count.
+    this.handledTasks.delete(taskId);
   }
 
   /**
@@ -312,6 +359,7 @@ export class AvbService extends Service {
 
     await this.deliverFailure(ctx, phase, error);
     await this.rt.deleteTask(taskId);
+    this.handledTasks.delete(taskId);
   }
 
   // --------------------------------------------------------------------------
@@ -387,14 +435,7 @@ export class AvbService extends Service {
         ) => Promise<void>;
       }
     | undefined {
-    switch (phase) {
-      case "TEXT_PHASE":
-        return this.buildTextPhaseWorker();
-      case "IMAGE_PHASE":
-        return this.buildImagePhaseWorker();
-      case "DELIVER":
-        return this.buildDeliverWorker();
-    }
+    return this.workers.get(phase);
   }
 
   // --------------------------------------------------------------------------
@@ -475,26 +516,12 @@ export class AvbService extends Service {
             return jobId;
           },
           extract: (result, ctx) => {
-            // Prefer adapter's extracted url; fall back to images[0]
+            // Prefer adapter's pre-extracted url; fall back to merged result.images[0]
+            // (extractImageUrl ran on the RAW payload pre-merge; result.result is
+            // the merged container — they can legitimately differ).
             let url = result.imageUrl;
             if (!url && Array.isArray(result.result?.images)) {
-              const first = result.result.images[0];
-              if (typeof first === "string") url = first;
-              else if (first && typeof first === "object") {
-                const rec = first as Record<string, unknown>;
-                for (const k of [
-                  "asset_url",
-                  "cdn_url",
-                  "cloudfront_url",
-                  "url",
-                ]) {
-                  const v = rec[k];
-                  if (typeof v === "string" && v) {
-                    url = v;
-                    break;
-                  }
-                }
-              }
+              url = extractAssetUrl(result.result.images[0]);
             }
             if (!url) {
               return {

@@ -4,6 +4,9 @@ import { ScryptedAPIError, ScryptedNetworkError } from "../exceptions.ts";
 import { pollJobToCompletion } from "../polling.ts";
 import type { JobStatusResponse } from "../types.ts";
 
+// Test seam: a hand-built object matching the structural surface
+// pollJobToCompletion consumes. No vi.mock() — @elizaos/core resolves to
+// real source via tsconfig paths. Do not add __mocks__/.
 function mockClient(
   responses: Array<JobStatusResponse | Error>,
 ): ScryptedClient {

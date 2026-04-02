@@ -45,6 +45,7 @@ export default scryptedaiPlugin;
 
 // Response normalization adapter
 export {
+  extractAssetUrl,
   extractError,
   extractImageUrl,
   extractText,

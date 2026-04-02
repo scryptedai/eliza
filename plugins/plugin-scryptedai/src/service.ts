@@ -28,6 +28,7 @@ import {
   ENV_BEARER_TOKEN,
   ENV_WEBHOOK_SECRET,
   type JobType,
+  POLLING_WINDOWS,
   SCRYPTEDAI_SERVICE_TYPE,
 } from "./constants.ts";
 import { pollJobToCompletion } from "./polling.ts";
@@ -64,11 +65,22 @@ export class ScryptedAIService extends Service {
   private client!: ScryptedClient;
   private defaultWebhookSecret?: string;
 
-  /** In-memory job store keyed by jobId. */
+  /**
+   * How long terminal jobs linger before eviction. Covers the realistic
+   * webhook+poll race window (seconds) with generous slack — the only
+   * reason a terminal record is kept is so a late duplicate hits the
+   * idempotency check instead of recreating a stub.
+   */
+  private static readonly TERMINAL_TTL_MS = 5 * 60_000;
+
+  /** In-memory job store keyed by jobId. Terminal entries evict after TERMINAL_TTL_MS. */
   private readonly jobs = new Map<string, JobRecord>();
 
-  /** (jobId:status) tuples already processed by the terminal handler. */
+  /** (jobId:status) tuples already processed by the terminal handler. Evicted with their job. */
   private readonly processed = new Set<string>();
+
+  /** Pending eviction timers, keyed by jobId, so stop() can cancel them. */
+  private readonly evictions = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** Terminal-event listeners (simple fan-out). */
   private readonly listeners = new Set<JobTerminalListener>();
@@ -117,6 +129,8 @@ export class ScryptedAIService extends Service {
     }
     this.activePolls.clear();
     this.listeners.clear();
+    for (const t of this.evictions.values()) clearTimeout(t);
+    this.evictions.clear();
   }
 
   // --------------------------------------------------------------------------
@@ -138,6 +152,9 @@ export class ScryptedAIService extends Service {
    * Await a specific job's terminal result. Resolves immediately if the job
    * is already terminal; otherwise blocks until a terminal event fires
    * (via webhook OR polling) or the timeout elapses.
+   *
+   * If `timeoutMs` is omitted, defaults to the polling window's max-wait for
+   * the job's tracked type (or `unknown` if untracked) — never unbounded.
    */
   async awaitJob(
     jobId: string,
@@ -148,26 +165,26 @@ export class ScryptedAIService extends Service {
       return existing.result;
     }
 
-    return new Promise<NormalizedJobResult>((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
+    const effectiveTimeout =
+      timeoutMs ??
+      POLLING_WINDOWS[existing?.jobType ?? "unknown"].maxWaitSeconds * 1000;
 
+    return new Promise<NormalizedJobResult>((resolve, reject) => {
       const unsubscribe = this.onTerminal((result) => {
         if (result.jobId !== jobId) return;
         unsubscribe();
-        if (timer) clearTimeout(timer);
+        clearTimeout(timer);
         resolve(result);
       });
 
-      if (timeoutMs !== undefined) {
-        timer = setTimeout(() => {
-          unsubscribe();
-          reject(
-            new Error(
-              `awaitJob timed out after ${timeoutMs}ms (jobId=${jobId})`,
-            ),
-          );
-        }, timeoutMs);
-      }
+      const timer = setTimeout(() => {
+        unsubscribe();
+        reject(
+          new Error(
+            `awaitJob timed out after ${effectiveTimeout}ms (jobId=${jobId})`,
+          ),
+        );
+      }, effectiveTimeout);
     });
   }
 
@@ -269,6 +286,7 @@ export class ScryptedAIService extends Service {
           (normalized.error ? " (with error)" : ""),
       );
 
+      this.scheduleEviction(jobId);
       return { idempotent: false, terminal: true };
     }
 
@@ -280,6 +298,37 @@ export class ScryptedAIService extends Service {
   /** Webhook entrypoint — called by the route handler. Thin wrapper over processTerminal. */
   ingestWebhook(normalized: NormalizedJobResult): IngestResult {
     return this.processTerminal(normalized);
+  }
+
+  /**
+   * Schedule a terminal job for eviction from `jobs` and `processed`.
+   * Idempotent — re-scheduling resets the timer.
+   *
+   * Trade-off: a duplicate webhook arriving AFTER the TTL window will be
+   * treated as fresh and re-fire listeners. ScryptedAI retry policy caps
+   * well under 5 minutes; downstream consumers (AVB's eagerExecuteForJob)
+   * are independently idempotent via task-row lookup. Bounded memory wins.
+   */
+  private scheduleEviction(jobId: string): void {
+    const existing = this.evictions.get(jobId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.evictions.delete(jobId);
+      this.jobs.delete(jobId);
+      // Sweep all status tuples for this jobId. The set is small (≤5 statuses
+      // per job: pending/processing/completed/failed/cancelled).
+      const prefix = `${jobId}:`;
+      for (const key of this.processed) {
+        if (key.startsWith(prefix)) this.processed.delete(key);
+      }
+    }, ScryptedAIService.TERMINAL_TTL_MS);
+
+    // Don't keep the process alive just for eviction housekeeping.
+    if (typeof timer === "object" && "unref" in timer) {
+      (timer as { unref: () => void }).unref();
+    }
+    this.evictions.set(jobId, timer);
   }
 
   // --------------------------------------------------------------------------

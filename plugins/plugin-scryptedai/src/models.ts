@@ -19,6 +19,7 @@
  */
 
 import type { IAgentRuntime } from "@elizaos/core";
+import { extractAssetUrl } from "./adapter.ts";
 import {
   DEFAULT_IMAGE_MODEL,
   ENV_IMAGE_MODEL,
@@ -164,17 +165,8 @@ export async function handleImage(
   const images = result.result?.images;
   if (Array.isArray(images)) {
     for (const img of images) {
-      if (typeof img === "string" && img) urls.push(img);
-      else if (typeof img === "object" && img !== null) {
-        const rec = img as Record<string, unknown>;
-        for (const key of ["asset_url", "cdn_url", "cloudfront_url", "url"]) {
-          const v = rec[key];
-          if (typeof v === "string" && v) {
-            urls.push(v);
-            break;
-          }
-        }
-      }
+      const url = extractAssetUrl(img);
+      if (url) urls.push(url);
     }
   }
 

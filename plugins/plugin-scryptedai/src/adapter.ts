@@ -136,7 +136,16 @@ const URL_FIELD_PRIORITY = [
   "url",
 ] as const;
 
-function probeUrl(item: unknown): string | undefined {
+/**
+ * Extract a media URL from a single asset item.
+ *
+ * ScryptedAI returns asset items in two shapes — bare URL strings, or
+ * objects with one of several URL-bearing keys depending on the model.
+ * This is the canonical priority-ordered probe; callers iterating an
+ * `images[]` or `videos[]` array should use this rather than re-implementing
+ * the field priority.
+ */
+export function extractAssetUrl(item: unknown): string | undefined {
   if (typeof item === "string") return item || undefined;
   if (!isRecord(item)) return undefined;
   for (const key of URL_FIELD_PRIORITY) {
@@ -145,6 +154,9 @@ function probeUrl(item: unknown): string | undefined {
   }
   return undefined;
 }
+
+// Internal alias — legacy local name retained for the helpers below.
+const probeUrl = extractAssetUrl;
 
 /**
  * Extract the first image URL from a normalized-or-raw payload.

@@ -5,6 +5,19 @@
  * an in-memory task store. Run AvbService.start() against it, then drive
  * workers manually (simulating TaskService ticks) to verify idempotence
  * and pipeline transitions.
+ *
+ * TEST SEAMS — there is no module-level mocking here.
+ *  - `@elizaos/core` is the REAL package via tsconfig paths (PromptSet,
+ *    getModelLimits, Service base are all genuine). This catches
+ *    contract drift.
+ *  - The runtime seam is `makeFakeRuntime()` below — dependency
+ *    injection through AvbRuntimeSurface, not vi.mock().
+ *  - The scryptedai seam is `makeFakeScrypted()` — a hand-built object
+ *    matching the structural surface AvbService consumes via
+ *    runtime.getService('scryptedai').
+ *
+ * Do NOT add a __mocks__/ directory. See test-helpers.ts:9-12 in core
+ * for the repo-wide doctrine: integration over module replacement.
  */
 
 import { getModelLimits, type Task } from "@elizaos/core";
@@ -255,17 +268,6 @@ function makeFakeRuntime(settings: Record<string, unknown> = {}): FakeRuntime {
   };
 }
 
-/**
- * Flush microtasks so fire-and-forget promises (autoStartIfNeeded) settle
- * before assertions run. Two awaits cover the promise-chain depth
- * (getTasks → getMemories → createRun).
- */
-async function flush(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
 /** Simulate a TaskService tick: execute every registered worker for its matching tasks. */
 async function tick(rt: FakeRuntime): Promise<void> {
   for (const task of [...rt.__tasks.values()]) {
@@ -319,8 +321,8 @@ describe("AvbService: start() + worker registration", () => {
 describe("AvbService: autonomous avatar generation on boot", () => {
   it("self-triggers createRun when no avatar exists and autogen enabled", async () => {
     const rt = makeFakeRuntime({ AVB_AUTOGEN_ON_BOOT: "true" });
-    await AvbService.start(rt as never);
-    await flush();
+    const svc = await AvbService.start(rt as never);
+    await svc.whenReady();
 
     // A TEXT_PHASE task was spawned for the agent's own room
     expect(rt.__tasks.size).toBe(1);
@@ -341,8 +343,8 @@ describe("AvbService: autonomous avatar generation on boot", () => {
       metadata: {} as never,
     } as Task);
 
-    await AvbService.start(rt as never);
-    await flush();
+    const svc = await AvbService.start(rt as never);
+    await svc.whenReady();
 
     // Still exactly the one pre-existing task — no duplicate run spawned
     expect(rt.__tasks.size).toBe(1);
@@ -359,16 +361,16 @@ describe("AvbService: autonomous avatar generation on boot", () => {
       },
     });
 
-    await AvbService.start(rt as never);
-    await flush();
+    const svc = await AvbService.start(rt as never);
+    await svc.whenReady();
 
     expect(rt.__tasks.size).toBe(0);
   });
 
   it("skips when AVB_AUTOGEN_ON_BOOT is explicitly false", async () => {
     const rt = makeFakeRuntime({ AVB_AUTOGEN_ON_BOOT: "false" });
-    await AvbService.start(rt as never);
-    await flush();
+    const svc = await AvbService.start(rt as never);
+    await svc.whenReady();
 
     expect(rt.__tasks.size).toBe(0);
   });
@@ -378,8 +380,8 @@ describe("AvbService: autonomous avatar generation on boot", () => {
     // Remove the test-fixture default-off so we exercise the real default
     rt.__settings.delete("AVB_AUTOGEN_ON_BOOT");
 
-    await AvbService.start(rt as never);
-    await flush();
+    const svc = await AvbService.start(rt as never);
+    await svc.whenReady();
 
     // Default-on: a run was triggered
     expect(rt.__tasks.size).toBe(1);
