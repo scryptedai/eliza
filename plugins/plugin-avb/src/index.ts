@@ -26,6 +26,7 @@
 
 import type { Plugin } from "@elizaos/core";
 import { generateAvatarAction } from "./action.ts";
+import { ChronometerService, chronoRuntimeEvents } from "./chrono/index.ts";
 import { AvbService } from "./service.ts";
 
 // ----------------------------------------------------------------------------
@@ -36,10 +37,17 @@ export const avbPlugin: Plugin = {
   name: "avb",
   description:
     "Autonomous Virtual Being pipeline — character introspection → avatar " +
-    "generation via db-persisted state machine. Calls scryptedai for actual generation.",
+    "generation via db-persisted state machine. Calls scryptedai for actual " +
+    "generation. Includes an on-device PoW chronometer that gives the agent " +
+    "a tamper-evident intrinsic clock.",
   dependencies: ["scryptedai"],
-  services: [AvbService],
+  // ChronometerService first so AvbService can record into it on start.
+  services: [ChronometerService, AvbService],
   actions: [generateAvatarAction],
+  // Mirror notable runtime EventType emissions into the chronometer's
+  // tamper-evident log so the agent's behavioural history is sealed
+  // automatically (see chrono/bridge.ts for the curated list).
+  events: chronoRuntimeEvents,
 };
 
 export default avbPlugin;
@@ -50,6 +58,8 @@ export default avbPlugin;
 
 // Action
 export { generateAvatarAction } from "./action.ts";
+// Chronometer (on-device PoW timestamp server)
+export * from "./chrono/index.ts";
 // Constants
 export {
   AVB_SERVICE_TYPE,
@@ -63,7 +73,6 @@ export {
   tagForRun,
   WORKER_NAMES,
 } from "./constants.ts";
-
 // Character introspection (reusable independently)
 export {
   buildImagePromptRequest,

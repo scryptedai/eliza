@@ -38,6 +38,11 @@ import {
   type ScryptedAIService,
 } from "@elizaos/plugin-scryptedai";
 import {
+  CHRONO_SERVICE_TYPE,
+  ChronoEventType,
+  type ChronometerService,
+} from "./chrono/index.ts";
+import {
   AVB_SERVICE_TYPE,
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
@@ -104,6 +109,12 @@ export class AvbService extends Service {
    */
   private rt!: AvbRuntimeSurface;
 
+  /**
+   * Chronometer (PoW timestamp server). Optional: if the service didn't
+   * load (e.g. tests), chronicle() no-ops.
+   */
+  private chrono?: ChronometerService;
+
   // --------------------------------------------------------------------------
   // Service lifecycle
   // --------------------------------------------------------------------------
@@ -117,6 +128,21 @@ export class AvbService extends Service {
     if (typeof envMethod === "string" && envMethod) {
       svc.imageMethod = envMethod;
     }
+
+    // Wire the chronometer so pipeline events are sealed into PoW blocks.
+    // ChronometerService is registered before AvbService in the plugin's
+    // services[] array, but we still resolve via load-promise (non-blocking)
+    // so the avatar pipeline isn't gated on the miner thread spinning up.
+    void svc.rt
+      .getServiceLoadPromise(CHRONO_SERVICE_TYPE)
+      .then((c) => {
+        svc.chrono = c as ChronometerService;
+      })
+      .catch((err) => {
+        svc.rt.logger.warn(
+          `[avb] Chronometer unavailable — pipeline events will not be timestamped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
 
     // Register phase workers
     svc.rt.registerTaskWorker(svc.buildTextPhaseWorker());
@@ -191,7 +217,16 @@ export class AvbService extends Service {
     this.rt.logger.info(
       `[avb] Run ${runId} started (phase=TEXT_PHASE, room=${roomId})`,
     );
+    this.chronicle(
+      ChronoEventType.RUN_STARTED,
+      `run=${runId} room=${roomId} trigger=${triggeringMessageId ?? "auto"}`,
+    );
     return runId;
+  }
+
+  /** Record an event into the chronometer if available. */
+  private chronicle(type: ChronoEventType, detail: string): void {
+    this.chrono?.recordEvent(type, detail);
   }
 
   /**
@@ -288,6 +323,10 @@ export class AvbService extends Service {
     this.rt.logger.info(
       `[avb] Phase ${phase} complete (run=${ctx.runId}, next=${spec.next ?? "terminal"})`,
     );
+    this.chronicle(
+      ChronoEventType.PHASE_COMPLETE,
+      `run=${ctx.runId} phase=${phase}`,
+    );
 
     if (spec.next) {
       await this.spawnPhaseTask(spec.next, ctx);
@@ -308,6 +347,10 @@ export class AvbService extends Service {
 
     this.rt.logger.warn(
       `[avb] Phase ${phase} failed (run=${ctx.runId}): ${error}`,
+    );
+    this.chronicle(
+      ChronoEventType.PHASE_FAILED,
+      `run=${ctx.runId} phase=${phase} error=${error}`,
     );
 
     await this.deliverFailure(ctx, phase, error);
@@ -343,6 +386,10 @@ export class AvbService extends Service {
 
     this.rt.logger.debug(
       `[avb] Spawned ${phase} task=${taskId} (deadline=${spec.deadlineMs}ms)`,
+    );
+    this.chronicle(
+      ChronoEventType.PHASE_STARTED,
+      `run=${ctx.runId} phase=${phase} task=${taskId}`,
     );
     return taskId;
   }
@@ -787,6 +834,10 @@ export class AvbService extends Service {
 
     this.rt.logger.info(
       `[avb] Delivered avatar for run ${ctx.runId} → ${ctx.imageUrl}`,
+    );
+    this.chronicle(
+      ChronoEventType.DELIVER,
+      `run=${ctx.runId} url=${ctx.imageUrl}`,
     );
   }
 
