@@ -38,6 +38,11 @@ import {
   type ScryptedAIService,
 } from "@elizaos/plugin-scryptedai";
 import {
+  CHRONOMETER_SERVICE_TYPE,
+  type ChronometerService,
+  EventKind,
+} from "./chronometer/index.ts";
+import {
   AVB_SERVICE_TYPE,
   BASE_TAGS,
   DEFAULT_IMAGE_METHOD,
@@ -104,6 +109,13 @@ export class AvbService extends Service {
    */
   private rt!: AvbRuntimeSurface;
 
+  /**
+   * Chronometer (PoW timestamp chain). Resolved lazily on first use —
+   * service init order isn't guaranteed and chronometer may not be
+   * registered if the operator disabled it.
+   */
+  private chrono?: ChronometerService;
+
   // --------------------------------------------------------------------------
   // Service lifecycle
   // --------------------------------------------------------------------------
@@ -166,6 +178,41 @@ export class AvbService extends Service {
   }
 
   // --------------------------------------------------------------------------
+  // Chronometer hook (best-effort; never throws into the pipeline)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Record a pipeline event into the PoW timestamp chain.
+   *
+   * Lazy service resolution: chronometer init order is not guaranteed
+   * relative to AVB, and operators may disable it. We resolve once and
+   * cache; if it's not there we silently no-op (the chronometer is an
+   * observability layer, not a load-bearing dependency — pipeline
+   * correctness must not hinge on it).
+   */
+  private recordChrono(
+    kind: EventKind,
+    payload: Record<string, unknown>,
+  ): void {
+    if (this.chrono === undefined) {
+      this.chrono =
+        this.rt.getService<ChronometerService>(CHRONOMETER_SERVICE_TYPE) ??
+        // Cache the miss too so we don't re-probe every event.
+        (null as unknown as ChronometerService);
+    }
+    if (!this.chrono) return;
+    try {
+      this.chrono.recordEvent(kind, JSON.stringify(payload));
+    } catch (e) {
+      // Chronometer should never throw, but if it does we swallow it —
+      // the pipeline must not fail because the clock hiccupped.
+      this.rt.logger.debug(
+        `[avb] chronometer.recordEvent threw: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // Public: pipeline entry point
   // --------------------------------------------------------------------------
 
@@ -191,6 +238,11 @@ export class AvbService extends Service {
     this.rt.logger.info(
       `[avb] Run ${runId} started (phase=TEXT_PHASE, room=${roomId})`,
     );
+    this.recordChrono(EventKind.PHASE_START, {
+      runId,
+      phase: "TEXT_PHASE",
+      roomId,
+    });
     return runId;
   }
 
@@ -289,8 +341,18 @@ export class AvbService extends Service {
       `[avb] Phase ${phase} complete (run=${ctx.runId}, next=${spec.next ?? "terminal"})`,
     );
 
+    this.recordChrono(EventKind.PHASE_COMPLETE, {
+      runId: ctx.runId,
+      phase,
+      next: spec.next,
+    });
+
     if (spec.next) {
       await this.spawnPhaseTask(spec.next, ctx);
+      this.recordChrono(EventKind.PHASE_START, {
+        runId: ctx.runId,
+        phase: spec.next,
+      });
     }
     // Only delete the old task once the next one is durably written.
     await this.rt.deleteTask(taskId);
@@ -309,6 +371,11 @@ export class AvbService extends Service {
     this.rt.logger.warn(
       `[avb] Phase ${phase} failed (run=${ctx.runId}): ${error}`,
     );
+    this.recordChrono(EventKind.PHASE_FAILED, {
+      runId: ctx.runId,
+      phase,
+      error,
+    });
 
     await this.deliverFailure(ctx, phase, error);
     await this.rt.deleteTask(taskId);

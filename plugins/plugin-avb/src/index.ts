@@ -26,6 +26,7 @@
 
 import type { Plugin } from "@elizaos/core";
 import { generateAvatarAction } from "./action.ts";
+import { ChronometerService } from "./chronometer/index.ts";
 import { AvbService } from "./service.ts";
 
 // ----------------------------------------------------------------------------
@@ -38,7 +39,7 @@ export const avbPlugin: Plugin = {
     "Autonomous Virtual Being pipeline — character introspection → avatar " +
     "generation via db-persisted state machine. Calls scryptedai for actual generation.",
   dependencies: ["scryptedai"],
-  services: [AvbService],
+  services: [ChronometerService, AvbService],
   actions: [generateAvatarAction],
 };
 
@@ -50,6 +51,20 @@ export default avbPlugin;
 
 // Action
 export { generateAvatarAction } from "./action.ts";
+// Chronometer (PoW timestamp chain)
+export {
+  CHRONOMETER_SERVICE_TYPE,
+  type ChainIssue,
+  type ChainIssueCode,
+  type ChainTip,
+  type ChronoEvent,
+  ChronometerService,
+  type ChronometerStatus,
+  ENV_AVB_CHRONOMETER_ENABLED,
+  ENV_AVB_CHRONOMETER_PATH,
+  EventKind,
+  type ValidationReport,
+} from "./chronometer/index.ts";
 // Constants
 export {
   AVB_SERVICE_TYPE,
@@ -63,7 +78,6 @@ export {
   tagForRun,
   WORKER_NAMES,
 } from "./constants.ts";
-
 // Character introspection (reusable independently)
 export {
   buildImagePromptRequest,

@@ -128,7 +128,21 @@ export interface TaskWorker {
 // ----------------------------------------------------------------------------
 
 export const EventType = {
+  // Bridged subset (chronometer subscribes to these)
   MESSAGE_SENT: "MESSAGE_SENT",
+  MESSAGE_RECEIVED: "MESSAGE_RECEIVED",
+  ACTION_STARTED: "ACTION_STARTED",
+  ACTION_COMPLETED: "ACTION_COMPLETED",
+  RUN_STARTED: "RUN_STARTED",
+  RUN_ENDED: "RUN_ENDED",
+  WORLD_JOINED: "WORLD_JOINED",
+  MODEL_USED: "MODEL_USED",
+  // Excluded subset (chronometer's isExcludedRuntimeEvent should drop these)
+  HOOK_BEFORE_RESPONSE: "HOOK_BEFORE_RESPONSE",
+  HOOK_AFTER_ACTION: "HOOK_AFTER_ACTION",
+  EMBEDDING_GENERATED: "EMBEDDING_GENERATED",
+  FORM_SUBMITTED: "FORM_SUBMITTED",
+  CONTROL_MESSAGE: "CONTROL_MESSAGE",
 } as const;
 
 export const ContentType = {
